@@ -1288,6 +1288,22 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     log.info("🚀 OTP APP IBRAHIM started.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+# =====================================================
+# 🔧 إضافة خادم ويب صغير لإبقاء البوت نشطاً في Render
+# =====================================================
+from flask import Flask
+import threading
 
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is Running! 🚀"
+
+def run_web():
+    app.run(host='0.0.0.0', port=8080)
+
+# تشغيل السيرفر في خلفية البوت
+threading.Thread(target=run_web, daemon=True).start()
 if __name__ == "__main__":
     main()
