@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 
 # ══════════════════ CONFIG (edit here) ══════════════════
-BOT_TOKEN = "8732305067:AAFPgDfA9L4CuDJrzUvgOf1gkVZfNawzXcI"
+BOT_TOKEN = "8907846587:AAGSHZbj0BN2okK0hUqd0lgMQVa789yZQJE"
 ADMIN_IDS = [8761832730]
 
 # Zenex — direct credentials
