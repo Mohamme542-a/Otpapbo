@@ -708,14 +708,75 @@ async def maintain_countries(self):
         try:
             # جلب الدول مع الخدمات المرتبطة بها
             pairs = self.get_my_countries_with_services()
+# ══════════════════ NumberPanel.tech (يعمل داخل البوت الكبير) ══════════════════
+class NumberPanelSource:
+    def __init__(self, base_url, token):
+        self.base = (base_url or "").rstrip("/")
+        self.token = token
+        self._seen_ids = set()
+        self._otp_cache = []
+        self._otp_ts = 0
+        self._country_cache = []
+        self._country_ts = 0
+
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36",
+            "Referer": f"{self.base}/dashboard/get-number"
+        }
+
+    def _get(self, path, params=None):
+        try:
+            r = requests.get(f"{self.base}{path}", headers=self._headers(),
+                             params=params or {}, timeout=15)
+            if r.ok:
+                try: return r.json()
+                except: return None
+        except Exception:
+            pass
+        return None
+
+    # =============== جلب الدول + الخدمات ===============
+    def get_my_countries_with_services(self):
+        found = []
+        try:
+            data = self._get("/my_numbers")
+            if isinstance(data, dict):
+                numbers = data.get("data") or data.get("numbers") or []
+                for n in numbers:
+                    num = n.get("number") or n.get("phone") or ""
+                    service = n.get("service") or n.get("app") or "general"
+                    if not num:
+                        continue
+                    clean_num = re.sub(r"\D", "", num)
+                    iso = ""
+                    for L in (3, 2, 1):
+                        if len(clean_num) >= L and clean_num[:L] in CC_TO_ISO:
+                            iso = CC_TO_ISO[clean_num[:L]]
+                            break
+                    if iso:
+                        name = iso_name(iso, "en") or iso.upper()
+                        found.append({
+                            "iso": iso,
+                            "name": name,
+                            "service": service.lower()
+                        })
+        except Exception as e:
+            logging.warning(f"NP get_my_countries_with_services error: {e}")
+        return found
+
+    def ranges(self):
+        out = []
+        try:
+            pairs = self.get_my_countries_with_services()
             if not pairs:
-                logging.warning("NP ranges: No country-service pairs found")
                 return []
-            
             for p in pairs:
                 iso = p["iso"]
                 service = p["service"]
-                # ربط الدولة بالخدمة الصحيحة فقط
                 for sid, svc in SERVICE_MAP.items():
                     if service in svc["keys"] or service == sid:
                         out.append({
@@ -725,27 +786,79 @@ async def maintain_countries(self):
                             "hits": 1,
                             "country": p["name"]
                         })
-            logging.info(f"NP: Built {len(out)} smart ranges")
         except Exception as e:
             logging.warning(f"NP ranges error: {e}")
         return out
 
-    # =============== دوال الأرقام والـ OTP ===============
+    # =============== جلب الرسائل من /api/otp (فقط الأرقام المحجوزة) ===============
     def fetch_otps(self):
-        numbers = self._get("/my_numbers") or []
+        """
+        يجلب رسائل OTP من /api/otp مباشرة.
+        يفحص أولاً ما إذا كان الرقم محجوزاً في users.json.
+        """
         new = []
-        if isinstance(numbers, dict):
-            numbers = numbers.get("data") or numbers.get("numbers") or []
-        for item in numbers:
-            num = item.get("number") or item.get("phone") or ""
-            msg = item.get("message") or item.get("otp") or item.get("sms") or ""
-            date = item.get("date") or item.get("time") or item.get("created_at") or ""
-            uid = f"np:{num}:{date}:{msg[:30]}"
-            if uid in self._seen_ids:
-                continue
-            self._seen_ids.add(uid)
-            if num and msg:
-                new.append({"id": uid, "number": num, "otp": msg, "date": date})
+        try:
+            # 1. جلب جميع الرسائل
+            data = self._get("/otp", {"count": 100})
+            
+            if not isinstance(data, list):
+                return []
+            
+            # 2. تحميل قائمة المستخدمين والأرقام المحجوزة
+            try:
+                with open(USERS_FILE, "r", encoding="utf-8") as f:
+                    users_data = json.load(f)
+            except:
+                users_data = {}
+            
+            # بناء قائمة بالأرقام المحجوزة (سريعة البحث)
+            reserved_numbers = set()
+            for uid, u in users_data.items():
+                num = u.get("number") or u.get("assigned_number")
+                if num:
+                    reserved_numbers.add(str(num).replace("+", ""))
+            
+            # 3. فحص الرسائل
+            for item in reversed(data):
+                if not isinstance(item, list) or len(item) < 4:
+                    continue
+                
+                service = str(item[0]) if len(item) > 0 else "Unknown"
+                number = str(item[1]) if len(item) > 1 else ""
+                message = str(item[2]) if len(item) > 2 else ""
+                date = str(item[3]) if len(item) > 3 else ""
+                
+                if not number or not message:
+                    continue
+                
+                # 🔥 التحقق الحاسم: الرقم يجب أن يكون في قائمة الأرقام المحجوزة
+                clean_num = number.replace("+", "")
+                if clean_num not in reserved_numbers:
+                    continue  # إذا لم يكن محجوزاً، تخطاه تماماً
+                
+                # إنشاء معرف فريد
+                uid = f"np:{number}:{date}:{message[:30]}"
+                
+                if uid in self._seen_ids:
+                    continue
+                
+                self._seen_ids.add(uid)
+                new.append({
+                    "id": uid,
+                    "number": number,
+                    "otp": message,
+                    "date": date,
+                    "service": service
+                })
+                
+            if len(self._seen_ids) > 10000:
+                self._seen_ids = set(list(self._seen_ids)[-5000:])
+                
+            logging.info(f"NP: Fetched {len(new)} OTPs for reserved numbers")
+            
+        except Exception as e:
+            logging.warning(f"NP fetch_otps error: {e}")
+            
         return new
 
     def request_number(self, service, country):
@@ -769,7 +882,7 @@ async def maintain_countries(self):
 
     def status(self):
         try:
-            data = self._get("/my_numbers")
+            data = self._get("/otp", {"count": 1})
             if data is not None:
                 return True, "✅ ناجح (متصل)"
             return False, "❌ فشل"
@@ -778,7 +891,6 @@ async def maintain_countries(self):
 
 # كائن المصدر الثالث
 NP = NumberPanelSource(NP_URL, NP_TOKEN)
-
 
 # ══════════════════ Login / health status (for admin) ══════════════════
 def zenex_status():
