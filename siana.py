@@ -1512,6 +1512,27 @@ async def on_startup(app):
     except Exception as e:
         log.warning("startup report failed: %s", e)
 
+# ═══════════════════════════════════════════════════════════════
+# 🔧 خادم ويب صغير للحفاظ على البوت نشطاً
+# ═══════════════════════════════════════════════════════════════
+from flask import Flask
+import threading
+import os
+
+# إنشاء تطبيق Flask
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is Running! 🚀"
+
+def run_web():
+    # قراءة المنفذ من متغيرات البيئة (Render يحددها تلقائياً)، أو 8080 كافتراض
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port)
+
+# تشغيل السيرفر في خلفية البوت (Daemon Thread)
+threading.Thread(target=run_web, daemon=True).start()
 def main():
     zyron_login()  # try auto-login using file credentials
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
