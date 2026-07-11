@@ -1275,9 +1275,7 @@ async def run_session(ctx, chat_id, uid, sid, iso, init_mid=None):
                 cancel_number(current["number"])
                 unregister_reservation(current["number"])
                 set_last_otp(uid, current["number"], hit["code"], current["svc_name"], current["country"], iso)
-                dm_kb = None
-                gu = group_url()
-                if gu:
+            
                     dm_kb = None
 gu = group_url()
 if gu:
