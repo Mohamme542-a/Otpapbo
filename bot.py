@@ -1157,7 +1157,7 @@ async def on_text(update, ctx):
             try: await ctx.bot.send_message(int(k), f"📣 {t}"); sent += 1
             except Exception: pass
         await update.message.reply_text(f"✅ {sent}"); return
-        if "📞" in t:
+    if "📞" in t:
         if not await enforce_sub(ctx, update.effective_chat.id, uid, lang):
             return
             
@@ -1180,6 +1180,7 @@ async def on_text(update, ctx):
     if "🛠" in t and is_admin:
         await update.message.reply_text(make_bold_unicode("🛠 Admin Panel"), parse_mode=ParseMode.HTML, reply_markup=admin_kb())
         return
+
 
 async def on_document(update, ctx):
     uid = update.effective_user.id
