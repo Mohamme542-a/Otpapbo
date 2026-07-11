@@ -1159,16 +1159,9 @@ async def on_text(update, ctx):
         await update.message.reply_text(f"✅ {sent}"); return
 
     if "📞" in t:
-        if not await enforce_sub(ctx, update.effective_chat.id, uid, lang):
-            return
-    # ====== إعادة تحميل تلقائية ======
-    global STATE, USERS, COMBOS
-    STATE  = _load(STATE_FILE, {"disabled": [], "custom": {}, "provider": "zenex", "mino_ranges": []})
-    USERS  = _load(USERS_FILE, {})
-    COMBOS = _load(COMBO_FILE, {})
-    STATE.setdefault("provider", "zenex"); STATE.setdefault("custom", {}); STATE.setdefault("disabled", []); STATE.setdefault("mino_ranges", [])
-    # ====================================
+        if not await enforce_sub(ctx, update.effective_chat.id, uid, lang): return
         await update.message.reply_text(tr(lang,"pick_service"), reply_markup=services_kb(lang)); return
+    if "🌐" in t:
         await update.message.reply_text(tr(lang,"choose_lang"), reply_markup=lang_kb()); return
     if "🛠" in t and is_admin:
         await update.message.reply_text(make_bold_unicode("🛠 Admin Panel"), parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
@@ -1285,7 +1278,10 @@ async def run_session(ctx, chat_id, uid, sid, iso, init_mid=None):
                 dm_kb = None
                 gu = group_url()
                 if gu:
-                    dm_kb = InlineKeyboardMarkup([[InlineKeyboardButton(tr(lang, "goto_group"), url=gu, style="primary")]])
+                    dm_kb = InlineKeyboardMarkup([
+    [InlineKeyboardButton(tr(lang, "goto_group"), url=gu)],
+    [InlineKeyboardButton("📋 نسخ الكود", callback_data=f"cp:{hit['code']}")]
+])
                 # ستيكر عند وصول الكود (آمن)
                 st = SERVICE_STICKERS.get(current.get("sid") or sid)
                 if st:
@@ -1587,22 +1583,7 @@ def run_web():
 threading.Thread(target=run_web, daemon=True).start()
 
 # ═══════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════
-# 🔧 خادم ويب صغير للحفاظ على البوت نشطاً
-# ═══════════════════════════════════════════════════════════════
-from flask import Flask
-import threading
-import os
 
-web_app = Flask(__name__)
-@web_app.route('/')
-def home(): return "Bot is Running! 🚀"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    web_app.run(host='0.0.0.0', port=port)
-
-threading.Thread(target=run_web, daemon=True).start()
 def main():
     zyron_login()
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
