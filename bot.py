@@ -1159,7 +1159,7 @@ async def on_text(update, ctx):
         await update.message.reply_text(f"✅ {sent}"); return
 
     if "📞" in t:
-    if not await enforce_sub(ctx, update.effective_chat.id, uid, lang):
+        if not await enforce_sub(ctx, update.effective_chat.id, uid, lang):
         return
     # ====== إعادة تحميل تلقائية ======
     global STATE, USERS, COMBOS
@@ -1168,7 +1168,7 @@ async def on_text(update, ctx):
     COMBOS = _load(COMBO_FILE, {})
     STATE.setdefault("provider", "zenex"); STATE.setdefault("custom", {}); STATE.setdefault("disabled", []); STATE.setdefault("mino_ranges", [])
     # ====================================
-    await update.message.reply_text(tr(lang,"pick_service"), reply_markup=services_kb(lang)); return
+        await update.message.reply_text(tr(lang,"pick_service"), reply_markup=services_kb(lang)); return
         await update.message.reply_text(tr(lang,"choose_lang"), reply_markup=lang_kb()); return
     if "🛠" in t and is_admin:
         await update.message.reply_text(make_bold_unicode("🛠 Admin Panel"), parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
