@@ -1278,10 +1278,13 @@ async def run_session(ctx, chat_id, uid, sid, iso, init_mid=None):
                 dm_kb = None
                 gu = group_url()
                 if gu:
-                    dm_kb = InlineKeyboardMarkup([
-    [InlineKeyboardButton(tr(lang, "goto_group"), url=gu)],
-    [InlineKeyboardButton("📋 نسخ الكود", callback_data=f"cp:{hit['code']}")]
-])
+                    dm_kb = None
+gu = group_url()
+if gu:
+    dm_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(tr(lang, "goto_group"), url=gu, style="primary")],
+        [InlineKeyboardButton("📋 نسخ الكود", callback_data=f"cp:{hit['code']}", style="success")]
+    ])
                 # ستيكر عند وصول الكود (آمن)
                 st = SERVICE_STICKERS.get(current.get("sid") or sid)
                 if st:
