@@ -1159,14 +1159,15 @@ async def on_text(update, ctx):
         await update.message.reply_text(f"✅ {sent}"); return
 
     if "📞" in t:
-    if not await enforce_sub(ctx, update.effective_chat.id, uid, lang): return
-    # ====== إعادة تحميل البوت تلقائياً عند طلب رقم ======
+    if not await enforce_sub(ctx, update.effective_chat.id, uid, lang):
+        return
+    # ====== إعادة تحميل تلقائية ======
     global STATE, USERS, COMBOS
     STATE  = _load(STATE_FILE, {"disabled": [], "custom": {}, "provider": "zenex", "mino_ranges": []})
     USERS  = _load(USERS_FILE, {})
     COMBOS = _load(COMBO_FILE, {})
     STATE.setdefault("provider", "zenex"); STATE.setdefault("custom", {}); STATE.setdefault("disabled", []); STATE.setdefault("mino_ranges", [])
-    # ====================================================
+    # ====================================
     await update.message.reply_text(tr(lang,"pick_service"), reply_markup=services_kb(lang)); return
         await update.message.reply_text(tr(lang,"choose_lang"), reply_markup=lang_kb()); return
     if "🛠" in t and is_admin:
