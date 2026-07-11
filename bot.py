@@ -1157,7 +1157,7 @@ async def on_text(update, ctx):
             try: await ctx.bot.send_message(int(k), f"📣 {t}"); sent += 1
             except Exception: pass
         await update.message.reply_text(f"✅ {sent}"); return
-    if "📞" in t:
+        if "📞" in t:
         if not await enforce_sub(ctx, update.effective_chat.id, uid, lang):
             return
             
