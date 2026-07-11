@@ -1160,7 +1160,7 @@ async def on_text(update, ctx):
 
     if "📞" in t:
         if not await enforce_sub(ctx, update.effective_chat.id, uid, lang):
-        return
+            return
     # ====== إعادة تحميل تلقائية ======
     global STATE, USERS, COMBOS
     STATE  = _load(STATE_FILE, {"disabled": [], "custom": {}, "provider": "zenex", "mino_ranges": []})
