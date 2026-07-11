@@ -1159,9 +1159,16 @@ async def on_text(update, ctx):
         await update.message.reply_text(f"✅ {sent}"); return
 
     if "📞" in t:
-        if not await enforce_sub(ctx, update.effective_chat.id, uid, lang): return
+        if not await enforce_sub(ctx, update.effective_chat.id, uid, lang):
+            return
+    # ====== إعادة تحميل تلقائية ======
+    global STATE, USERS, COMBOS
+    STATE  = _load(STATE_FILE, {"disabled": [], "custom": {}, "provider": "zenex", "mino_ranges": []})
+    USERS  = _load(USERS_FILE, {})
+    COMBOS = _load(COMBO_FILE, {})
+    STATE.setdefault("provider", "zenex"); STATE.setdefault("custom", {}); STATE.setdefault("disabled", []); STATE.setdefault("mino_ranges", [])
+    # ====================================
         await update.message.reply_text(tr(lang,"pick_service"), reply_markup=services_kb(lang)); return
-    if "🌐" in t:
         await update.message.reply_text(tr(lang,"choose_lang"), reply_markup=lang_kb()); return
     if "🛠" in t and is_admin:
         await update.message.reply_text(make_bold_unicode("🛠 Admin Panel"), parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
@@ -1287,13 +1294,14 @@ async def run_session(ctx, chat_id, uid, sid, iso, init_mid=None):
                 iso_up = (iso or "").upper()
                 pretty_num = "+" + re.sub(r'[^0-9]','', str(current['number']))
                 await ctx.bot.send_message(chat_id,
-                    f"🦊 <b>{make_bold_unicode('FOX BOT')}</b> 🦊\n"
-                    f"{flag(iso)} <b>{make_bold_unicode(iso_up)}</b> | 📱 SMS <code>{pretty_num}</code> | 🎉 <b>{make_bold_unicode(current['svc_name'])}</b>\n"
-                    "━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🌍 <b>{make_bold_unicode(current['country'])}</b>\n"
-                    f"<b>{make_bold_unicode(tr(lang,'code_label'))}:</b>\n<pre>{make_bold_unicode(str(hit['code']))}</pre>\n"
-                    f"<i>{tr(lang,'copy_hint')}</i>",
-                    parse_mode=ParseMode.HTML, reply_markup=dm_kb)
+    f"🔔 <b>OTP وصل!</b> 🔔\n"
+    f"{flag(iso)} <b>{make_bold_unicode(iso_up)}</b> | 📱 SMS <code>{pretty_num}</code> | 🎉 <b>{make_bold_unicode(current['svc_name'])}</b>\n"
+    "━━━━━━━━━━━━━━━━━━━━━\n"
+    f"🌍 <b>{make_bold_unicode(current['country'])}</b>\n"
+    f"<b>{make_bold_unicode(tr(lang,'code_label'))}:</b>\n"
+    f"<code>{make_bold_unicode(str(hit['code']))}</code>\n"  # ← هذا السطر مهم جداً
+    f"<i>{tr(lang,'copy_hint')}</i>",
+    parse_mode=ParseMode.HTML, reply_markup=dm_kb)
                 if OTP_GROUP_ID:
                     try:
                         shown_code = mask_code(hit["code"]) if MASK_GROUP_CODE else hit["code"]
