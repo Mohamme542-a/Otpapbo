@@ -593,6 +593,20 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     await msg.reply_text(welcome_text(), parse_mode=ParseMode.HTML, reply_markup=main_kb(uid))
 
+from flask import Flask
+import threading
+import os
+
+web_app = Flask(__name__)
+@web_app.route('/')
+def home(): return "Bot is Running! 🚀"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port)
+
+threading.Thread(target=run_web, daemon=True).start()
+
 # ══════════════════ MAIN ══════════════════
 def main():
     if not BOT_TOKEN:
