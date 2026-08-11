@@ -7,106 +7,106 @@
 #   ✦ رفع أي محتوى + قوائم متعددة الملفات (جودات) مع غلاف
 #   ✦ 🆕 شريط متحرك (Marquee) للعناوين الطويلة
 #   ✦ 🆕 نسخ احتياطي دائم واستعادة تلقائية (يحل مشكلة Render)
-#   ✦ 🆕 15 ميزة إضافية (مفضلة، مشاهدات، روابط مشاركة، اشتراك إجباري…)
-# ═══════════════════════════════════════════════════════════════
-import json, logging, os, time, random, html, io
-from telegram import (
-    InlineKeyboardButton, InlineKeyboardMarkup,
-    KeyboardButton, ReplyKeyboardMarkup, Update, InputFile,
+# ✦ 🆕 15 ميزة إضافية (مفضلة، مشاهدات، روابط مشاركة، اشتراك إلزامي…)
+═ ...
+استيراد json، وlogging، وos، وtime، وrandom، وhtml، وio
+من تيليجرام استورد  (
+    زر لوحة المفاتيح المضمن، ترميز لوحة المفاتيح المضمن،
+    زر لوحة المفاتيح، الرد على لوحة المفاتيح، التحديث، ملف الإدخال،
 )
-from telegram.constants import ParseMode
-from telegram.ext import (
-    Application, CallbackQueryHandler, CommandHandler,
-    ContextTypes, MessageHandler, filters,
+من telegram.constants قم باستيراد ParseMode
+من مكتبة telegram.ext استورد  (
+    التطبيق، معالج استعلام رد الاتصال، معالج الأوامر،
+    أنواع السياق، معالج الرسائل، المرشحات،
 )
 
-# ══════════════════ CONFIG (املأ هنا) ══════════════════
-BOT_TOKEN = "8589967320:AAG_nrroMIc3dl2v4G339gSJPBqzmrpTMcY"          # ← ضع توكن البوت هنا
-ADMIN_IDS = [8747566796]          # ← ضع ايدي الأدمن هنا مثال: [123456789]
+# فطري .
+BOT_TOKEN = "8589967320:AAG_nrroMIc3dl2v4G339gSJPBqzmrpTMcY"           # ← ضع توكن البوت هنا
+ADMIN_IDS = [ 8747566796 ]           # ← ضع ايدي الأدمن هنا مثال: [123456789]
 
-# قناة/مجموعة خاصة تُحفظ فيها النسخ الاحتياطية تلقائياً (اجعل البوت أدمن فيها)
-BACKUP_CHAT_ID = ""     # ← مثال: -1001234567890   (اتركه فارغاً لتعطيل النسخ التلقائي)
+# قناة/مجموعة خاصة تُحفظ فيها النسخ الاحتياطية (اجعل البوت أدمن فيها)
+BACKUP_CHAT_ID = ""      # ← مثال: -1001234567890 (اتركه بالكامل لتعطيل النسخ التلقائي)
 
 # مجلد التخزين: على Render أنشئ Persistent Disk وضع مساره هنا مثل /var/data
-DATA_DIR = os.environ.get("DATA_DIR", ".")
+DATA_DIR = os.environ.get ( " DATA_DIR" , " . " )
 
-BOT_USERNAME = "@Shhsb77_bot"       # ← اسم البوت بدون @ (لروابط المشاركة) اختياري
+BOT_USERNAME = "@Shhsb77_bot"        # ← اسم البوت بدون @ (لروابط المشاركة) اختياري
 
-os.makedirs(DATA_DIR, exist_ok=True)
-DATA_FILE  = os.path.join(DATA_DIR, "archive.json")
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
-PAGE_SIZE  = 8          # عدد العناصر في الصفحة الواحدة
+os.makedirs ( DATA_DIR , exist_ok= True )
+DATA_FILE = os.path.join ( DATA_DIR , " archive.json " )
+USERS_FILE = os.path.join ( DATA_DIR , " users.json " )
+PAGE_SIZE = 8           # عدد العناصر في صفحة التنزيل
 
-# إعدادات الشريط المتحرك للعناوين الطويلة
-MARQUEE_WIDTH  = 26     # عدد الأحرف الظاهرة
-MARQUEE_EVERY  = 1.4    # سرعة الحركة بالثواني
-MARQUEE_TICKS  = 45     # عدد الحركات قبل التوقف (توفير موارد)
+# إعدادات شريط المتحرك للإناوين
+MARQUEE_WIDTH = 10      # عدد المشاهير
+MARQUEE_EVERY = 1.4     # سرعة الحركة بالثواني
+MARQUEE_TICKS = 45      # عدد التوجهات التي قبلها (توفير الموارد)
 
-AUTO_BACKUP_MIN = 20    # كل كم دقيقة تُرسل نسخة احتياطية
+AUTO_BACKUP_MIN = 20     # كل كم دقيقة تُرسل نسخة بيعية
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-log = logging.getLogger("archive")
+logging.basicConfig ( format= "%(asctime)s - %(name)s - %(levelname)s - %(message)s" , level= logging.INFO )
+log = logging.getLogger ( " archive" )
 
-# ══════════════════ TEXT BOLD HELPER ══════════════════
-def make_bold_unicode(text):
-    out = []
-    for char in str(text):
-        c = ord(char)
-        if 65 <= c <= 90:      out.append(chr(c - 65 + 0x1D5D4))   # A-Z
-        elif 97 <= c <= 122:   out.append(chr(c - 97 + 0x1D5EE))   # a-z
-        elif 48 <= c <= 57:    out.append(chr(c - 48 + 0x1D7EC))   # 0-9
-        else:                  out.append(char)
-    return "".join(out)
+# ══════════════════ مساعد تنسيق النص بخط عريض ══════════════════
+دالة  make_bold_unicode ( نص ) :
+    الناتج = [ ]
+    for char in  str ( text ) :
+        ج = ترتيب ( حرف )
+        إذا كان  65 ≤ c ≤ 90 : out.append ( chr ( c - 65 + 0x1D5D4 ) ) # AZ   
+        elif  97 <= c <= 122 : out.append ( chr ( c - 97 + 0x1D5EE ) ) # az   
+        elif  48 <= c <= 57 : out.append ( chr ( c - 48 + 0x1D7EC ) )    # 0-9
+        وإلا : أضف الحرف إلى الناتج .
+    return  "" . join ( out )
 
-LINE = "━━━━━━━━━━━━━━━━━━━━━"
+LINE = "━━━━━━━━━━━━━━━━━━━━"
 
-def _kb_btn(text, style=None):
-    try:
-        return KeyboardButton(text, style=style) if style else KeyboardButton(text)
-    except TypeError:
-        return KeyboardButton(text)
+def  _kb_btn ( text, style= None ) :
+    يحاول :
+        أعد  زر لوحة المفاتيح ( النص، النمط=النمط )  إذا كان النمط موجودًا، وإلا فأعد  زر لوحة المفاتيح ( النص ).
+    باستثناء خطأ النوع:
+        أعد  زر لوحة المفاتيح ( النص )
 
-def IB(text, style=None, **kw):
-    try:
-        return InlineKeyboardButton(text, style=style, **kw) if style else InlineKeyboardButton(text, **kw)
-    except TypeError:
-        return InlineKeyboardButton(text, **kw)
+def  IB ( text, style= None , ** kw ) :
+    يحاول :
+        أعد  InlineKeyboardButton ( text, style=style, ** kw )  إذا كان style موجودًا، وإلا  InlineKeyboardButton ( text, ** kw )
+    باستثناء خطأ النوع:
+        return  InlineKeyboardButton ( text, ** kw )
 
-# ══════════════════ MARQUEE (شريط متحرك للنص الطويل) ══════════════════
-GAP = "   •   "
+# للتواصل:
+الفجوة = " • ""   •   "
 
-def scroll(text, offset=0, width=MARQUEE_WIDTH):
-    """يعيد جزءاً من النص يتحرك كالشريط إن كان أطول من العرض المسموح."""
-    t = str(text).replace("\n", " ").strip()
-    if len(t) <= width:
-        return t
+دالة التمرير (نص، إزاحة=0، عرض=عرض_التمرير): scroll(text, offset=0, width=MARQUEE_WIDTH):
+    """يعيد جزءً من النص كالشريط إن كان مجسمًا لتصميم التصميم.""""""يعيد جزءاً من النص يتحرك كالشريط إن كان أطول من العرض المسموح."""
+    t = str(text).replace("\n", " ").strip()str(text).replace("\n", " ").strip()
+    إذا كان طول (t) أقل من أو يساوي العرض:if len(t) <= width:
+        أعد treturn t
     s = t + GAP
-    off = offset % len(s)
-    return (s + s)[off:off + width]
+    off = offset % len(s)len(s)
+    return (s + s)[off:off + width]return (s + s)[off:off + width]
 
-def is_long(text, width=MARQUEE_WIDTH):
-    return len(str(text).replace("\n", " ").strip()) > width
+دالة is_long(text, width=MARQUEE_WIDTH): is_long(text, width=MARQUEE_WIDTH):
+    return len(str(text).replace("\n", " ").strip()) > widthreturn len(str(text).replace("\n", " ").strip()) > width
 
-# مخزن الشرائط النشطة: (chat_id, message_id) -> {"build":fn, "off":int}
-MARQ = {}
+# مخزن الشرائط العضوية: (chat_id, message_id) -> {"build":fn, "off":int}
+MARQ = {}{}
 
-async def _marq_tick(ctx: ContextTypes.DEFAULT_TYPE):
-    key = ctx.job.data["key"]
-    st = MARQ.get(key)
-    if not st:
-        ctx.job.schedule_removal(); return
-    st["off"] += 1
-    if st["off"] > MARQUEE_TICKS:
-        MARQ.pop(key, None); ctx.job.schedule_removal(); return
-    try:
-        await ctx.bot.edit_message_reply_markup(
-            chat_id=key[0], message_id=key[1], reply_markup=st["build"](st["off"]))
-    except Exception:
-        MARQ.pop(key, None); ctx.job.schedule_removal()
+async def _marq_tick(ctx: ContextTypes.DEFAULT_TYPE): def _marq_tick(ctx: ContextTypes.DEFAULT_TYPE):
+    key = ctx.job.data["key"]job.data["key"]
+    st = MARQ.get(key)get(key)
+    وإلا:if not st:
+        ctx.job.schedule_removal(); returnjob.schedule_removal(); return
+    st["off"] += 1["off"] += 1
+    إذا كان st["off"] > MARQUEE_TICKS:if st["off"] > MARQUEE_TICKS:
+        MARQ.pop(key, None); ctx.job.schedule_removal(); returnpop(key, None); ctx.job.schedule_removal(); return
+    يحاول:try:
+        await ctx.bot.edit_message_reply_markup(await ctx.bot.edit_message_reply_markup(
+            chat_id=key[0], message_id=key[1], reply_markup=st["build"](st["off"]))[0], message_id=key[1], reply_markup=st["build"](st["off"]))
+    باستثناء الاستثناء:except Exception:
+        MARQ.pop(key, None); ctx.job.schedule_removal()pop(key, None); ctx.job.schedule_removal()
 
-def start_marquee(ctx, message, build, texts):
-    """يشغّل حركة النص إذا كان هناك عنوان طويل في القائمة."""
-    try:
+دالة بدء العرض المتحرك (ctx، الرسالة، البناء، النصوص): start_marquee(ctx, message, build, texts):
+    """يشغّل حركة النص إذا كان هناك عنوان طويل في القائمة.""""""يشغّل حركة النص إذا كان هناك عنوان طويل في القائمة."""
+    يحاول:try:
         if not message or not any(is_long(t) for t in texts):
             return
         jq = getattr(ctx, "job_queue", None)
