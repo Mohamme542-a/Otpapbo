@@ -1343,7 +1343,19 @@ async def on_startup(app: Application):
                 parse_mode=ParseMode.HTML)
         except Exception as e:
             log.warning("startup notice failed: %s", e)
+from flask import Flask
+import threading
+import os
 
+web_app = Flask(__name__)
+@web_app.route('/')
+def home(): return "Bot is Running! 🚀"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port)
+
+threading.Thread(target=run_web, daemon=True).start()
 def main():
     if not BOT_TOKEN:
         raise SystemExit("⚠️ ضع BOT_TOKEN في أعلى الملف.")
