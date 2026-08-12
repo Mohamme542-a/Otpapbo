@@ -38,7 +38,7 @@ USERS_FILE = os.path.join(DATA_DIR, "users.json")
 PAGE_SIZE  = 8          # عدد العناصر في الصفحة الواحدة
 
 # إعدادات الشريط المتحرك للعناوين الطويلة
-MARQUEE_WIDTH  = 25     # عدد الأحرف الظاهرة
+MARQUEE_WIDTH  = 100     # عدد الأحرف الظاهرة
 MARQUEE_EVERY  = 1.4    # سرعة الحركة بالثواني
 MARQUEE_TICKS  = 45     # عدد الحركات قبل التوقف (توفير موارد)
 
