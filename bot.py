@@ -50,11 +50,11 @@ from telegram.ext import (
 # ========================= إعدادات البوت =========================
 # ضع التوكن بين علامتي الاقتباس، مثال: BOT_TOKEN = "123456:ABC..."
 # اتركه فارغاً أثناء التجربة ثم عدّله بنفسك.
-BOT_TOKEN = ""
+BOT_TOKEN = "8893399262:AAE7_7dHce4j4_Zp710opf0-qLjTIN0CDuc"
 
 # ضع رقم حساب الأدمن هنا، مثال: ADMIN_ID_TEXT = "123456789"
 # اتركه فارغاً إذا لم ترد تفعيل أوامر الإدارة.
-ADMIN_ID_TEXT = ""
+ADMIN_ID_TEXT = "8877567829"
 ADMIN_ID = int(ADMIN_ID_TEXT) if ADMIN_ID_TEXT.strip().isdigit() else 0
 
 # يحفظ البرنامج قاعدة البيانات والنتائج بجوار ملف bot.py، وهذا مناسب لـ Pydroid.
@@ -1103,6 +1103,19 @@ def build_application() -> Application:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     application.add_error_handler(error_handler)
     return application
+from flask import Flask
+import threading
+import os
+
+web_app = Flask(__name__)
+@web_app.route('/')
+def home(): return "Bot is Running! 🚀"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port)
+
+threading.Thread(target=run_web, daemon=True).start()
 
 
 def main() -> None:
