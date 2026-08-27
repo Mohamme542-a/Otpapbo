@@ -1,1108 +1,1983 @@
-"""
-Telegram PDF/Image OCR & Dictionary Translation Bot - Single File / Pydroid Edition
-
-هذا الملف مستقل من ناحية الكود: لا يحتاج إلى ملف .env أو config خارجي.
-عدّل BOT_TOKEN و ADMIN_ID_TEXT في قسم الإعدادات أسفل الاستيرادات مباشرة.
-
-للتثبيت داخل Pydroid استخدم Pip من القائمة أو نفّذ:
-python-telegram-bot==22.5
-PyMuPDF==1.26.4
-Pillow==11.3.0
-pytesseract==0.3.13
-langdetect==1.0.9
-
-ملاحظة: pytesseract هو واجهة بايثون، ويحتاج وجود برنامج Tesseract نفسه.
-إذا لم يكن Tesseract مثبتاً في جهاز Pydroid فسيعمل البوت في استقبال الملفات،
-لكن OCR لن يعمل حتى تثبّت محرك Tesseract وتضع مساره في TESSERACT_CMD.
-"""
-
-from __future__ import annotations
-
-import asyncio
-import csv
-import io
-import json
-import logging
-import re
-import shutil
-import sqlite3
-import tempfile
-import time
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Iterable
-
-import fitz  # PyMuPDF
-import pytesseract
-from langdetect import LangDetectException, detect
-from PIL import Image, ImageOps
-from telegram import BotCommand, Update
-from telegram.constants import ChatAction
+# ═══════════════════════════════════════════════════════════════
+# 🗂 ARCHIVE BOT v3 — بوت أرشيف مؤسسة إعلامية (Telegram)
+#   pip install "python-telegram-bot[job-queue]==21.6"
+#   python archive_bot_v3.py
+#
+#   ✦ أقسام قابلة للتعديل بالكامل من لوحة الأدمن
+#   ✦ رفع أي محتوى + قوائم متعددة الملفات (جودات) مع غلاف
+#   ✦ 🆕 شريط متحرك (Marquee) للعناوين الطويلة
+#   ✦ 🆕 نسخ احتياطي دائم واستعادة تلقائية (يحل مشكلة Render)
+#   ✦ 🆕 15 ميزة إضافية (مفضلة، مشاهدات، روابط مشاركة، اشتراك إجباري…)
+# ═══════════════════════════════════════════════════════════════
+import json, logging, os, time, random, html, io
+from telegram import (
+    InlineKeyboardButton, InlineKeyboardMarkup,
+    KeyboardButton, ReplyKeyboardMarkup, Update, InputFile,
+)
+from telegram.constants import ParseMode
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
+    Application, CallbackQueryHandler, CommandHandler,
+    ContextTypes, MessageHandler, filters,
 )
 
-# ========================= إعدادات البوت =========================
-# ضع التوكن بين علامتي الاقتباس، مثال: BOT_TOKEN = "123456:ABC..."
-# اتركه فارغاً أثناء التجربة ثم عدّله بنفسك.
-BOT_TOKEN = "8893399262:AAG07XosgkW6YRaTanBpwFuJF9ozJj82x0M"
+# ══════════════════ CONFIG (املأ هنا) ══════════════════
+BOT_TOKEN = "8893399262:AAG07XosgkW6YRaTanBpwFuJF9ozJj82x0M"          # ← ضع توكن البوت هنا
+ADMIN_IDS = [8619521184]          # ← ضع ايدي الأدمن هنا مثال: [123456789]
 
-# ضع رقم حساب الأدمن هنا، مثال: ADMIN_ID_TEXT = "123456789"
-# اتركه فارغاً إذا لم ترد تفعيل أوامر الإدارة.
-ADMIN_ID_TEXT = "8619521184"
-ADMIN_ID = int(ADMIN_ID_TEXT) if ADMIN_ID_TEXT.strip().isdigit() else 0
+# قناة/مجموعة خاصة تُحفظ فيها النسخ الاحتياطية تلقائياً (اجعل البوت أدمن فيها)
+BACKUP_CHAT_ID = ""     # ← مثال: -1001234567890   (اتركه فارغاً لتعطيل النسخ التلقائي)
 
-# يحفظ البرنامج قاعدة البيانات والنتائج بجوار ملف bot.py، وهذا مناسب لـ Pydroid.
-DATA_DIR = Path(__file__).resolve().parent / "bot_data"
-DB_PATH = DATA_DIR / "bot.db"
+# مجلد التخزين: على Render أنشئ Persistent Disk وضع مساره هنا مثل /var/data
+DATA_DIR = os.environ.get("DATA_DIR", ".")
 
-# إعدادات اختيارية يمكن تعديلها من هنا.
-MAX_FILE_MB = 20
-MAX_SEND_IMAGES = 500
-OCR_TIMEOUT_SECONDS = 120
+BOT_USERNAME = ""       # ← اسم البوت بدون @ (لروابط المشاركة) اختياري
 
-# إذا كان ملف tesseract موجوداً في مسار خاص على هاتفك، ضعه هنا، مثال:
-# TESSERACT_CMD = "/data/data/ru.iiec.pydroid3/files/usr/bin/tesseract"
-TESSERACT_CMD = ""
-if TESSERACT_CMD.strip():
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD.strip()
+os.makedirs(DATA_DIR, exist_ok=True)
+DATA_FILE  = os.path.join(DATA_DIR, "archive.json")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+PAGE_SIZE  = 8          # عدد العناصر في الصفحة الواحدة
 
-LANGUAGE_ALIASES = {
-    "ar": "ara",
-    "arabic": "ara",
-    "العربية": "ara",
-    "en": "eng",
-    "english": "eng",
-    "الانجليزية": "eng",
-    "fr": "fra",
-    "french": "fra",
-    "de": "deu",
-    "german": "deu",
-    "es": "spa",
-    "spanish": "spa",
-    "ru": "rus",
-    "russian": "rus",
-    "it": "ita",
-    "italian": "ita",
-    "pt": "por",
-    "tr": "tur",
-}
-SUPPORTED_OCR_CODES = {"ara", "eng", "fra", "deu", "spa", "rus", "ita", "por", "tur"}
-SUPPORTED_TRANSLATION_CODES = {"ar", "en", "fr", "de", "es", "ru", "it", "pt", "tr", "auto"}
+# إعدادات الشريط المتحرك للعناوين الطويلة
+MARQUEE_WIDTH  = 100     # عدد الأحرف الظاهرة
+MARQUEE_EVERY  = 1.4    # سرعة الحركة بالثواني
+MARQUEE_TICKS  = 45
+WRAP_MAX_LINES = 3      # أقصى عدد أسطر في وضع «النص الكامل»     # عدد الحركات قبل التوقف (توفير موارد)
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO,
-)
-LOGGER = logging.getLogger("pdf_ocr_bot")
-PROCESS_SEMAPHORE = asyncio.Semaphore(2)
+AUTO_BACKUP_MIN = 20    # كل كم دقيقة تُرسل نسخة احتياطية
 
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+log = logging.getLogger("archive")
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+# ══════════════════ TEXT BOLD HELPER ══════════════════
+def make_bold_unicode(text):
+    out = []
+    for char in str(text):
+        c = ord(char)
+        if 65 <= c <= 90:      out.append(chr(c - 65 + 0x1D5D4))   # A-Z
+        elif 97 <= c <= 122:   out.append(chr(c - 97 + 0x1D5EE))   # a-z
+        elif 48 <= c <= 57:    out.append(chr(c - 48 + 0x1D7EC))   # 0-9
+        else:                  out.append(char)
+    return "".join(out)
 
+LINE = "━━━━━━━━━━━━━━━━━━━━━"
 
-def ensure_dirs() -> None:
-    for directory in (DATA_DIR, DATA_DIR / "downloads", DATA_DIR / "results"):
-        directory.mkdir(parents=True, exist_ok=True)
-
-
-def normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value.strip().casefold())
-
-
-def safe_filename(name: str, fallback: str = "file") -> str:
-    name = Path(name or fallback).name
-    name = re.sub(r"[^\w.\- ]+", "_", name, flags=re.UNICODE).strip()
-    return name[:120] or fallback
-
-
-def user_label(update: Update) -> str:
-    user = update.effective_user
-    return f"{user.full_name} ({user.id})" if user else "unknown"
-
-
-class Database:
-    def __init__(self, path: Path):
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
-
-    def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        return connection
-
-    def _initialize(self) -> None:
-        with self.connect() as con:
-            con.executescript(
-                """
-                PRAGMA journal_mode=WAL;
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT DEFAULT '',
-                    first_name TEXT DEFAULT '',
-                    first_seen TEXT NOT NULL,
-                    last_seen TEXT NOT NULL,
-                    is_banned INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS settings (
-                    user_id INTEGER NOT NULL,
-                    key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    PRIMARY KEY (user_id, key)
-                );
-                CREATE TABLE IF NOT EXISTS dictionary_entries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source_lang TEXT NOT NULL,
-                    target_lang TEXT NOT NULL,
-                    source_text TEXT NOT NULL,
-                    target_text TEXT NOT NULL,
-                    source_normalized TEXT NOT NULL,
-                    created_by INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(source_lang, target_lang, source_normalized)
-                );
-                CREATE TABLE IF NOT EXISTS feedback (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    message TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS usage_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    action TEXT NOT NULL,
-                    details TEXT DEFAULT '',
-                    created_at TEXT NOT NULL
-                );
-                """
-            )
-
-    def touch_user(self, user_id: int, username: str = "", first_name: str = "") -> None:
-        now = utc_now()
-        with self.connect() as con:
-            con.execute(
-                """INSERT INTO users(user_id, username, first_name, first_seen, last_seen)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(user_id) DO UPDATE SET
-                   username=excluded.username, first_name=excluded.first_name, last_seen=excluded.last_seen""",
-                (user_id, username, first_name, now, now),
-            )
-
-    def log(self, user_id: int, action: str, details: str = "") -> None:
-        with self.connect() as con:
-            con.execute(
-                "INSERT INTO usage_logs(user_id, action, details, created_at) VALUES (?, ?, ?, ?)",
-                (user_id, action, details[:500], utc_now()),
-            )
-
-    def get_setting(self, user_id: int, key: str, default: str = "") -> str:
-        with self.connect() as con:
-            row = con.execute(
-                "SELECT value FROM settings WHERE user_id=? AND key=?", (user_id, key)
-            ).fetchone()
-        return str(row["value"]) if row else default
-
-    def set_setting(self, user_id: int, key: str, value: str) -> None:
-        with self.connect() as con:
-            con.execute(
-                """INSERT INTO settings(user_id, key, value) VALUES (?, ?, ?)
-                   ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value""",
-                (user_id, key, value),
-            )
-
-    def get_settings(self, user_id: int) -> dict[str, str]:
-        defaults = {"ocr_lang": "ara+eng", "source_lang": "auto", "target_lang": "ar", "mode": "both"}
-        with self.connect() as con:
-            rows = con.execute("SELECT key, value FROM settings WHERE user_id=?", (user_id,)).fetchall()
-        result = defaults.copy()
-        result.update({row["key"]: row["value"] for row in rows})
-        return result
-
-    def is_banned(self, user_id: int) -> bool:
-        with self.connect() as con:
-            row = con.execute("SELECT is_banned FROM users WHERE user_id=?", (user_id,)).fetchone()
-        return bool(row and row["is_banned"])
-
-    def set_banned(self, user_id: int, value: bool) -> None:
-        with self.connect() as con:
-            con.execute("UPDATE users SET is_banned=? WHERE user_id=?", (int(value), user_id))
-
-    def add_dictionary_entry(self, source_lang: str, target_lang: str, source: str, target: str, created_by: int) -> None:
-        source = source.strip()
-        target = target.strip()
-        if not source or not target:
-            raise ValueError("لا يمكن حفظ زوج ترجمة فارغ")
-        with self.connect() as con:
-            con.execute(
-                """INSERT INTO dictionary_entries
-                   (source_lang, target_lang, source_text, target_text, source_normalized, created_by, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(source_lang, target_lang, source_normalized) DO UPDATE SET
-                   source_text=excluded.source_text, target_text=excluded.target_text,
-                   created_by=excluded.created_by, created_at=excluded.created_at""",
-                (source_lang, target_lang, source, target, normalize_text(source), created_by, utc_now()),
-            )
-
-    def delete_dictionary_entry(self, source_lang: str, target_lang: str, source: str) -> bool:
-        with self.connect() as con:
-            cursor = con.execute(
-                "DELETE FROM dictionary_entries WHERE source_lang=? AND target_lang=? AND source_normalized=?",
-                (source_lang, target_lang, normalize_text(source)),
-            )
-        return cursor.rowcount > 0
-
-    def dictionary_entries(self, source_lang: str, target_lang: str) -> list[sqlite3.Row]:
-        with self.connect() as con:
-            if source_lang == "auto":
-                return con.execute(
-                    """SELECT source_text, target_text, source_normalized, source_lang
-                       FROM dictionary_entries WHERE target_lang=? ORDER BY LENGTH(source_text) DESC""",
-                    (target_lang,),
-                ).fetchall()
-            return con.execute(
-                """SELECT source_text, target_text, source_normalized, source_lang
-                   FROM dictionary_entries WHERE source_lang=? AND target_lang=?
-                   ORDER BY LENGTH(source_text) DESC""",
-                (source_lang, target_lang),
-            ).fetchall()
-
-    def dictionary_count(self, source_lang: str = "", target_lang: str = "") -> int:
-        query = "SELECT COUNT(*) AS n FROM dictionary_entries WHERE 1=1"
-        args: list[str] = []
-        if source_lang:
-            query += " AND source_lang=?"
-            args.append(source_lang)
-        if target_lang:
-            query += " AND target_lang=?"
-            args.append(target_lang)
-        with self.connect() as con:
-            return int(con.execute(query, args).fetchone()["n"])
-
-    def export_dictionary(self, source_lang: str, target_lang: str) -> list[sqlite3.Row]:
-        with self.connect() as con:
-            return con.execute(
-                """SELECT source_lang, target_lang, source_text, target_text
-                   FROM dictionary_entries WHERE source_lang=? AND target_lang=?
-                   ORDER BY source_text COLLATE NOCASE""",
-                (source_lang, target_lang),
-            ).fetchall()
-
-    def add_feedback(self, user_id: int, message: str) -> None:
-        with self.connect() as con:
-            con.execute(
-                "INSERT INTO feedback(user_id, message, created_at) VALUES (?, ?, ?)",
-                (user_id, message[:4000], utc_now()),
-            )
-
-    def user_ids(self) -> list[int]:
-        with self.connect() as con:
-            return [int(row["user_id"]) for row in con.execute("SELECT user_id FROM users WHERE is_banned=0")]
-
-    def overall_stats(self) -> dict[str, int]:
-        with self.connect() as con:
-            users = con.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
-            active = con.execute("SELECT COUNT(*) AS n FROM users WHERE is_banned=0").fetchone()["n"]
-            logs = con.execute("SELECT COUNT(*) AS n FROM usage_logs").fetchone()["n"]
-            feedback = con.execute("SELECT COUNT(*) AS n FROM feedback").fetchone()["n"]
-            entries = con.execute("SELECT COUNT(*) AS n FROM dictionary_entries").fetchone()["n"]
-        return {"users": int(users), "active": int(active), "logs": int(logs), "feedback": int(feedback), "entries": int(entries)}
-
-
-ensure_dirs()
-DB = Database(DB_PATH)
-
-
-@dataclass
-class ProcessingResult:
-    source_type: str
-    source_name: str
-    page_images: list[Path]
-    embedded_images: list[Path]
-    text: str
-    page_count: int = 0
-    embedded_count: int = 0
-
-
-def normalized_ocr_lang(value: str) -> str:
-    value = value.strip().lower()
-    if value in {"auto", "default"}:
-        return "ara+eng"
-    pieces = re.split(r"[+,\s]+", value)
-    codes: list[str] = []
-    for piece in pieces:
-        code = LANGUAGE_ALIASES.get(piece, piece)
-        if code in SUPPORTED_OCR_CODES and code not in codes:
-            codes.append(code)
-    return "+".join(codes) if codes else "ara+eng"
-
-
-def valid_translation_code(value: str) -> bool:
-    return value.strip().lower() in SUPPORTED_TRANSLATION_CODES
-
-
-def detect_language(text: str) -> str:
-    if len(re.sub(r"\s+", "", text)) < 20:
-        return "غير كافٍ للكشف"
+def _kb_btn(text, style=None):
     try:
-        return detect(text)
-    except LangDetectException:
-        return "غير معروف"
+        return KeyboardButton(text, style=style) if style else KeyboardButton(text)
+    except TypeError:
+        return KeyboardButton(text)
 
-
-def ocr_image(path: Path, lang: str) -> str:
-    lang = normalized_ocr_lang(lang)
-    with Image.open(path) as original:
-        image = ImageOps.exif_transpose(original).convert("RGB")
-        max_side = max(image.size)
-        if max_side > 3200:
-            scale = 3200 / max_side
-            image = image.resize((int(image.width * scale), int(image.height * scale)))
-        try:
-            return pytesseract.image_to_string(
-                image,
-                lang=lang,
-                config="--oem 3 --psm 3",
-                timeout=OCR_TIMEOUT_SECONDS,
-            ).strip()
-        except (pytesseract.TesseractError, RuntimeError) as exc:
-            LOGGER.warning("OCR failed for %s: %s", path, exc)
-            return ""
-
-
-def process_image_file(input_path: Path, output_dir: Path, ocr_lang: str) -> ProcessingResult:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    copy_path = output_dir / f"image_{safe_filename(input_path.name, 'image')}"
-    shutil.copy2(input_path, copy_path)
-    text = ocr_image(copy_path, ocr_lang)
-    return ProcessingResult(
-        source_type="image",
-        source_name=input_path.name,
-        page_images=[copy_path],
-        embedded_images=[],
-        text=text,
-        page_count=1,
-        embedded_count=0,
-    )
-
-
-def process_pdf_file(input_path: Path, output_dir: Path, ocr_lang: str) -> ProcessingResult:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    page_images: list[Path] = []
-    embedded_images: list[Path] = []
-    ocr_sections: list[str] = []
-    native_sections: list[str] = []
-
-    with fitz.open(input_path) as document:
-        for page_index, page in enumerate(document, start=1):
-            native_text = page.get_text("text").strip()
-            if native_text:
-                native_sections.append(f"--- النص الأصلي من الصفحة {page_index} ---\n{native_text}")
-
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            page_path = output_dir / f"page_{page_index:04d}.png"
-            pixmap.save(str(page_path))
-            page_images.append(page_path)
-            page_text = ocr_image(page_path, ocr_lang)
-            if page_text:
-                ocr_sections.append(f"--- OCR الصفحة {page_index} ---\n{page_text}")
-
-            seen_xrefs: set[int] = set()
-            for image_index, image_info in enumerate(page.get_images(full=True), start=1):
-                xref = int(image_info[0])
-                if xref in seen_xrefs:
-                    continue
-                seen_xrefs.add(xref)
-                try:
-                    extracted = document.extract_image(xref)
-                    extension = extracted.get("ext", "png")
-                    image_path = output_dir / f"page_{page_index:04d}_embedded_{image_index:03d}.{extension}"
-                    image_path.write_bytes(extracted["image"])
-                    embedded_images.append(image_path)
-                    embedded_text = ocr_image(image_path, ocr_lang)
-                    if embedded_text:
-                        ocr_sections.append(
-                            f"--- OCR الصورة المضمنة {page_index}/{image_index} ---\\n{embedded_text}"
-                        )
-                except Exception as exc:
-                    LOGGER.warning("Could not extract PDF image xref=%s: %s", xref, exc)
-
-    sections = []
-    if native_sections:
-        sections.append("\n\n".join(native_sections))
-    if ocr_sections:
-        sections.append("\n\n".join(ocr_sections))
-    combined = "\n\n".join(sections).strip()
-    return ProcessingResult(
-        source_type="pdf",
-        source_name=input_path.name,
-        page_images=page_images,
-        embedded_images=embedded_images,
-        text=combined or "لم يتم العثور على نص قابل للاستخراج.",
-        page_count=len(page_images),
-        embedded_count=len(embedded_images),
-    )
-
-
-def parse_dictionary_lines(raw_text: str) -> list[tuple[str, str]]:
-    raw_text = raw_text.lstrip("\ufeff")
+def IB(text, style=None, **kw):
     try:
-        payload = json.loads(raw_text)
-        pairs: list[tuple[str, str]] = []
-        if isinstance(payload, dict):
-            pairs = [(str(key), str(value)) for key, value in payload.items()]
-        elif isinstance(payload, list):
-            for item in payload:
-                if isinstance(item, dict) and "source" in item and "target" in item:
-                    pairs.append((str(item["source"]), str(item["target"])))
-                elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                    pairs.append((str(item[0]), str(item[1])))
-        if pairs:
-            return [(a.strip(), b.strip()) for a, b in pairs if a.strip() and b.strip()]
-    except json.JSONDecodeError:
-        pass
+        return InlineKeyboardButton(text, style=style, **kw) if style else InlineKeyboardButton(text, **kw)
+    except TypeError:
+        return InlineKeyboardButton(text, **kw)
 
-    pairs = []
-    for line in raw_text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or line.startswith("//"):
-            continue
-        separator = None
-        for candidate in ("\t", "=>", "→", "|", "\u2192"):
-            if candidate in line:
-                separator = candidate
-                break
-        if separator:
-            left, right = line.split(separator, 1)
-        elif line.count(",") == 1:
-            left, right = line.split(",", 1)
-        elif ":" in line and line.count(":") == 1:
-            left, right = line.split(":", 1)
+# ══════════════════ MARQUEE (شريط متحرك للنص الطويل) ══════════════════
+GAP = "   •   "
+
+# مخزن الشرائط النشطة: (chat_id, message_id) -> {"build":fn, "off":int, "tok":int}
+MARQ = {}
+VIEW_TOK = {}      # chat_id -> رقم العرض الحالي (لإبطال الشرائط القديمة)
+
+def marquee_mode():
+    m = S("marquee", "scroll")
+    return m if m in ("scroll", "wrap", "off") else "scroll"
+
+def new_view(chat_id):
+    """يفتح عرضاً جديداً في المحادثة ويبطل كل الشرائط السابقة (يمنع الجليتش)."""
+    VIEW_TOK[chat_id] = VIEW_TOK.get(chat_id, 0) + 1
+    return VIEW_TOK[chat_id]
+
+def stop_marquee(ctx, chat_id, message_id=None):
+    """يوقف شرائط المحادثة (أو رسالة محددة) فوراً."""
+    try:
+        for key in list(MARQ.keys()):
+            if key[0] == chat_id and (message_id is None or key[1] == message_id):
+                MARQ.pop(key, None)
+        jq = getattr(ctx, "job_queue", None)
+        if jq is None:
+            return
+        for j in jq.jobs():
+            d = getattr(j, "data", None) or {}
+            k = d.get("key")
+            if k and k[0] == chat_id and (message_id is None or k[1] == message_id):
+                j.schedule_removal()
+    except Exception as e:
+        log.debug("stop_marquee: %s", e)
+
+def wrap_label(text, width=MARQUEE_WIDTH):
+    """يعرض النص كاملاً: السطر الأول عريض والبقية أسطر صغيرة تحته."""
+    t = str(text).replace("\n", " ").strip()
+    words, lines, cur = t.split(), [], ""
+    for w in words:
+        if not cur:
+            cur = w
+        elif len(cur) + 1 + len(w) <= width:
+            cur += " " + w
         else:
-            continue
-        left, right = left.strip(), right.strip()
-        if left and right:
-            pairs.append((left, right))
-    return pairs
+            lines.append(cur); cur = w
+        while len(cur) > width:
+            lines.append(cur[:width]); cur = cur[width:]
+    if cur:
+        lines.append(cur)
+    lines = lines[:WRAP_MAX_LINES] or [t[:width]]
+    head = make_bold_unicode(lines[0])
+    rest = "\n".join(lines[1:])
+    return head + ("\n" + rest if rest else "")
 
+def scroll(text, offset=0, width=MARQUEE_WIDTH):
+    """يعيد جزءاً من النص يتحرك كالشريط إن كان أطول من العرض المسموح."""
+    t = str(text).replace("\n", " ").strip()
+    if len(t) <= width:
+        return t
+    s2 = t + GAP
+    off = offset % len(s2)
+    return (s2 + s2)[off:off + width]
 
-def parse_language_pair_and_text(argument: str, default_source: str, default_target: str) -> tuple[str, str, str]:
-    parts = argument.strip().split(maxsplit=2)
-    source, target, text = default_source, default_target, argument.strip()
-    if len(parts) >= 3 and valid_translation_code(parts[0]) and valid_translation_code(parts[1]):
-        source, target, text = parts[0].lower(), parts[1].lower(), parts[2]
-    return source, target, text.strip()
+def btn(text, off=0, width=MARQUEE_WIDTH):
+    """نص الزر النهائي حسب وضع العرض الذي اختاره الأدمن."""
+    t = str(text).replace("\n", " ").strip()
+    mode = marquee_mode()
+    if len(t) <= width:
+        return make_bold_unicode(t)
+    if mode == "wrap":
+        return wrap_label(t, width)
+    if mode == "off":
+        return make_bold_unicode(t[:width - 1] + "…")
+    return make_bold_unicode(scroll(t, off, width))
 
+def is_long(text, width=MARQUEE_WIDTH):
+    return len(str(text).replace("\n", " ").strip()) > width
 
-def dictionary_translate(text: str, source_lang: str, target_lang: str) -> tuple[str, int]:
-    entries = DB.dictionary_entries(source_lang, target_lang)
-    if not entries:
-        return text, 0
-    result = text
-    replacements = 0
-    for entry in entries:
-        source = str(entry["source_text"])
-        target = str(entry["target_text"])
-        if not source:
-            continue
-        pattern = re.compile(rf"(?<!\w){re.escape(source)}(?!\w)", re.IGNORECASE | re.UNICODE)
-        result, count = pattern.subn(lambda _match: target, result)
-        if count == 0 and normalize_text(result) == normalize_text(source):
-            result = target
-            count = 1
-        replacements += count
-    return result, replacements
+async def _marq_tick(ctx: ContextTypes.DEFAULT_TYPE):
+    key = ctx.job.data["key"]
+    st = MARQ.get(key)
+    if not st:
+        ctx.job.schedule_removal(); return
+    # إبطال إن كان المستخدم انتقل لعرض آخر (سبب الجليتش سابقاً)
+    if st.get("tok") != VIEW_TOK.get(key[0]):
+        MARQ.pop(key, None); ctx.job.schedule_removal(); return
+    if marquee_mode() != "scroll":
+        MARQ.pop(key, None); ctx.job.schedule_removal(); return
+    st["off"] += 1
+    if st["off"] > MARQUEE_TICKS:
+        MARQ.pop(key, None); ctx.job.schedule_removal(); return
+    try:
+        await ctx.bot.edit_message_reply_markup(
+            chat_id=key[0], message_id=key[1], reply_markup=st["build"](st["off"]))
+    except Exception:
+        MARQ.pop(key, None); ctx.job.schedule_removal()
 
+def start_marquee(ctx, message, build, texts):
+    """يشغّل حركة النص إذا كان الوضع «شريط متحرك» وهناك عنوان طويل."""
+    try:
+        if not message or marquee_mode() != "scroll":
+            return
+        if not any(is_long(t) for t in texts):
+            return
+        jq = getattr(ctx, "job_queue", None)
+        if jq is None:
+            return
+        chat_id = message.chat_id
+        stop_marquee(ctx, chat_id)                 # شريط واحد فقط لكل محادثة
+        tok = VIEW_TOK.get(chat_id) or new_view(chat_id)
+        key = (chat_id, message.message_id)
+        MARQ[key] = {"build": build, "off": 0, "tok": tok}
+        jq.run_repeating(_marq_tick, interval=MARQUEE_EVERY, first=MARQUEE_EVERY,
+                         data={"key": key}, name=f"marq:{key[0]}:{key[1]}")
+    except Exception as e:
+        log.debug("marquee skip: %s", e)
 
-def split_text(text: str, limit: int = 3900) -> list[str]:
-    if len(text) <= limit:
-        return [text]
-    chunks: list[str] = []
-    remaining = text
-    while remaining:
-        if len(remaining) <= limit:
-            chunks.append(remaining)
-            break
-        cut = remaining.rfind("\n", 0, limit)
-        if cut < 500:
-            cut = remaining.rfind(" ", 0, limit)
-        if cut < 500:
-            cut = limit
-        chunks.append(remaining[:cut])
-        remaining = remaining[cut:].lstrip()
-    return chunks
+# ══════════════════ STORAGE ══════════════════
+DEFAULT_DATA = {
+    "brand": "المؤسسة الإعلامية",
+    "flag": "🏴",
+    "welcome": "السلام عليكم ورحمة الله وبركاته\nحيّاكم الله في أرشيف المؤسسة الإعلامية\nاختر القسم الذي تريده من الأزرار بالأسفل.",
+    "about": "أرشيف رقمي يضم الإصدارات والأناشيد والكتب والإنفوغرافيك.",
+    "contact": "للتواصل: @username",
+    "labels": {
+        "sections": "📚 الأقسام",
+        "about": "ℹ️ حول",
+        "contact": "📞 تواصل",
+        "search": "🔎 بحث",
+        "admin": "🛠️ لوحة الأدمن",
+        "back": "🔙 رجوع",
+        "fav": "⭐ المفضلة",
+        "new": "🆕 الأحدث",
+        "top": "🔥 الأكثر طلباً",
+        "random": "🎲 عشوائي",
+        "cart": "🧺 السلة",
+        "tags": "🏷 الوسوم",
+        "adv": "🔍 بحث متقدم",
+        "leader": "🎖 المتصدرون",
+        "hist": "🕓 آخر ما شاهدت",
+        "feedback": "✉️ مراسلة الإدارة",
+        "dltop": "🏆 الأكثر تحميلاً",
+    },
+    "sections": [
+        {"id": "s1", "title": "🎬 إصدارات",   "desc": "", "items": []},
+        {"id": "s2", "title": "🎙 أناشيد",    "desc": "", "items": []},
+        {"id": "s3", "title": "📚 كتب",       "desc": "", "items": []},
+        {"id": "s4", "title": "📊 إنفوغرافيك", "desc": "", "items": []},
+    ],
+    "admins": [],                 # أدمن إضافيون يُضافون من داخل البوت
+    "settings": {
+        "maintenance": False,     # وضع الصيانة
+        "force_sub": "",          # @channel للاشتراك الإجباري
+        "protect": False,         # منع إعادة التوجيه/الحفظ للمحتوى
+        "marquee": "scroll",      # scroll | wrap | off  (وضع عرض العناوين الطويلة)
+        "notify_new": False,      # إشعار المستخدمين بالجديد تلقائياً
+        "daily_limit": 0,         # حد التنزيل اليومي لكل مستخدم (0 = بلا حد)
+        "banner": "",             # شريط إعلان أعلى القوائم
+    },
+    "trash": [],                  # سلة المحذوفات
+    "logs": [],                   # سجل نشاط
+    "seq": 100,
+}
 
+def _load(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(default, dict):
+            for k, v in default.items():
+                d.setdefault(k, v)
+            for k, v in default.get("labels", {}).items():
+                d["labels"].setdefault(k, v)
+            for k, v in default.get("settings", {}).items():
+                d["settings"].setdefault(k, v)
+        return d
+    except Exception:
+        return json.loads(json.dumps(default))
 
-async def reply_chunks(update: Update, text: str) -> None:
-    message = update.effective_message
-    if not message:
-        return
-    for chunk in split_text(text):
-        await message.reply_text(chunk)
+DATA  = _load(DATA_FILE, DEFAULT_DATA)
+USERS = _load(USERS_FILE, {})
 
+def _atomic_write(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
-async def send_media(update: Update, path: Path, caption: str = "") -> None:
-    message = update.effective_message
-    if not message:
-        return
-    size_mb = path.stat().st_size / (1024 * 1024)
-    if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"} and size_mb <= 9.5:
-        with path.open("rb") as handle:
-            await message.reply_photo(photo=handle, caption=caption[:1024] if caption else None)
-    else:
-        with path.open("rb") as handle:
-            await message.reply_document(document=handle, caption=caption[:1024] if caption else None)
+DIRTY = {"data": False, "users": False}
 
+def save_data():
+    _atomic_write(DATA_FILE, DATA)
+    DIRTY["data"] = True          # ليُرسل في النسخة الاحتياطية القادمة
 
-def last_result_path(user_id: int) -> Path | None:
-    value = DB.get_setting(user_id, "last_result_path", "")
-    path = Path(value) if value else None
-    return path if path and path.exists() else None
+def save_users():
+    _atomic_write(USERS_FILE, USERS)
+    DIRTY["users"] = True
 
+def add_log(txt):
+    DATA.setdefault("logs", []).append({"t": int(time.time()), "x": txt[:200]})
+    DATA["logs"] = DATA["logs"][-300:]
+    save_data()
 
-def save_last_result(user_id: int, text: str, source_name: str) -> Path:
-    filename = f"{user_id}_{int(time.time())}_{safe_filename(source_name, 'result')}.txt"
-    path = DATA_DIR / "results" / filename
-    path.write_text(text, encoding="utf-8")
-    DB.set_setting(user_id, "last_result_path", str(path))
-    return path
+def next_id(prefix):
+    DATA["seq"] = int(DATA.get("seq", 100)) + 1
+    save_data()
+    return f"{prefix}{DATA['seq']}"
 
+def L(key):
+    return DATA["labels"].get(key, key)
 
-def get_last_text(user_id: int) -> str:
-    path = last_result_path(user_id)
-    return path.read_text(encoding="utf-8") if path else ""
+def is_admin(uid):
+    return uid in ADMIN_IDS or uid in DATA.get("admins", [])
 
+def S(key, default=None):
+    return DATA.get("settings", {}).get(key, default)
 
-def is_admin(update: Update) -> bool:
-    return bool(ADMIN_ID and update.effective_user and update.effective_user.id == ADMIN_ID)
+def note_user(tgu):
+    u = USERS.get(str(tgu.id))
+    if not u:
+        u = {"id": tgu.id, "name": tgu.first_name or "", "username": tgu.username or "",
+             "banned": False, "joined": int(time.time()), "fav": [], "hits": 0}
+        USERS[str(tgu.id)] = u
+        save_users()
+    u.setdefault("fav", []); u.setdefault("hits", 0)
+    u["last"] = int(time.time())
+    return u
 
+def get_section(sid):
+    for s in DATA["sections"]:
+        if s["id"] == sid:
+            return s
+    return None
 
-def ensure_user(update: Update) -> bool:
-    user = update.effective_user
-    if not user:
+def get_item(sec, iid):
+    for it in sec["items"]:
+        if it["id"] == iid:
+            return it
+    return None
+
+def find_item(iid):
+    for s in DATA["sections"]:
+        for it in s["items"]:
+            if it["id"] == iid:
+                return s, it
+    return None, None
+
+def all_items():
+    return [(s, it) for s in DATA["sections"] for it in s["items"]]
+
+# ══════════════════ NAV / ANTI-SPAM ══════════════════
+LAST_ACT = {}
+def rate_ok(uid, gap=0.5):
+    now = time.time()
+    if now - LAST_ACT.get(uid, 0) < gap:
         return False
-    DB.touch_user(user.id, user.username or "", user.first_name or "")
-    if DB.is_banned(user.id) and not is_admin(update):
-        return False
+    LAST_ACT[uid] = now
     return True
 
+# ══════════════════ TYPES ══════════════════
+TYPE_EMOJI = {
+    "video": "🎬", "audio": "🎧", "voice": "🎙", "photo": "🖼",
+    "document": "📄", "animation": "🎞", "text": "📝", "pack": "🗂",
+}
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    await update.effective_message.reply_text(
-        "أهلاً بك في بوت PDF OCR.\n\n"
-        "أرسل ملف PDF أو صورة وسأستخرج الصفحات والصور والنص منها.\n"
-        "بعد المعالجة استخدم /translate لترجمة النص بالقاموس الذي يضيفه الأدمن.\n\n"
-        "اكتب /help لعرض جميع الوظائف."
-    )
-    DB.log(update.effective_user.id, "start")
+def detect_media(msg):
+    if msg.video:     return "video", msg.video.file_id, msg.caption or (msg.video.file_name or "فيديو")
+    if msg.audio:     return "audio", msg.audio.file_id, msg.caption or (msg.audio.title or msg.audio.file_name or "ملف صوتي")
+    if msg.voice:     return "voice", msg.voice.file_id, msg.caption or "بصمة صوتية"
+    if msg.photo:     return "photo", msg.photo[-1].file_id, msg.caption or "صورة"
+    if msg.animation: return "animation", msg.animation.file_id, msg.caption or "صورة متحركة"
+    if msg.document:  return "document", msg.document.file_id, msg.caption or (msg.document.file_name or "ملف")
+    if msg.text:      return "text", None, msg.text
+    return None, None, None
 
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    await update.effective_message.reply_text(
-        "الوظائف المتاحة:\n\n"
-        "1) إرسال PDF: استخراج كل صفحة كصورة، واستخراج الصور المضمنة، وتشغيل OCR.\n"
-        "2) إرسال صورة: استخراج النص منها مباشرة.\n"
-        "3) /translate [المصدر] [الهدف] [النص] — ترجمة قاموسية. اكتب last لترجمة آخر نتيجة.\n"
-        "4) /setlang ara+eng — لغة OCR؛ المتاح ara, eng, fra, deu, spa, rus, ita, por, tur.\n"
-        "5) /settarget ar — اللغة الهدف الافتراضية.\n"
-        "6) /mode both|images|text — تحديد ما يرسله البوت.\n"
-        "7) /summary — إحصاءات آخر نص.\n"
-        "8) /search كلمة — البحث في آخر نص مستخرج.\n"
-        "9) /last — إعادة إرسال آخر ملف نصي.\n"
-        "10) /settings — عرض إعداداتك.\n"
-        "11) /feedback اقتراحك — إرسال ملاحظة للأدمن.\n"
-        "12) /privacy — معلومات الخصوصية.\n"
-        "13) /id — عرض رقم حسابك.\n\n"
-        "أوامر الأدمن بعد ضبط ADMIN_ID:\n"
-        "/teach [المصدر] [الهدف] المصدر => الترجمة\n"
-        "/delword [المصدر] [الهدف] الكلمة\n"
-        "/dictstats و /exportdict [المصدر] [الهدف]\n"
-        "رفع ملف TXT/CSV/JSON مع caption مثل: /importdict en ar\n"
-        "/stats و /broadcast و /ban و /unban"
-    )
-
-
-async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user:
-        DB.touch_user(update.effective_user.id, update.effective_user.username or "", update.effective_user.first_name or "")
-        await update.effective_message.reply_text(f"معرّف حسابك: {update.effective_user.id}")
-
-
-async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    settings = DB.get_settings(update.effective_user.id)
-    await update.effective_message.reply_text(
-        "إعداداتك الحالية:\n"
-        f"OCR: {settings['ocr_lang']}\n"
-        f"المصدر: {settings['source_lang']}\n"
-        f"الهدف: {settings['target_lang']}\n"
-        f"الوضع: {settings['mode']}"
-    )
-
-
-async def setlang_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    value = " ".join(context.args).strip()
-    normalized = normalized_ocr_lang(value)
-    if not value or normalized == "ara+eng" and value.lower() not in {"ara+eng", "eng+ara", "ar+en", "en+ar", "auto"}:
-        await update.effective_message.reply_text("استخدم مثلاً: /setlang ara+eng أو /setlang ara")
-        return
-    DB.set_setting(update.effective_user.id, "ocr_lang", normalized)
-    await update.effective_message.reply_text(f"تم ضبط لغة OCR إلى: {normalized}")
-
-
-async def settarget_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    value = " ".join(context.args).strip().lower()
-    if not valid_translation_code(value) or value == "auto":
-        await update.effective_message.reply_text("استخدم رمزاً مثل ar أو en أو fr أو de أو es")
-        return
-    DB.set_setting(update.effective_user.id, "target_lang", value)
-    await update.effective_message.reply_text(f"تم ضبط اللغة الهدف إلى: {value}")
-
-
-async def mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    value = (context.args[0].lower() if context.args else "").strip()
-    if value not in {"both", "images", "text"}:
-        await update.effective_message.reply_text("الاستخدام: /mode both أو /mode images أو /mode text")
-        return
-    DB.set_setting(update.effective_user.id, "mode", value)
-    await update.effective_message.reply_text(f"تم ضبط الوضع إلى: {value}")
-
-
-async def translate_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    user_id = update.effective_user.id
-    settings = DB.get_settings(user_id)
-    argument = " ".join(context.args).strip()
-    if argument.lower() == "last":
-        text = get_last_text(user_id)
-        source, target = settings["source_lang"], settings["target_lang"]
+async def send_media(bot, chat_id, t, fid, cap, reply_markup=None):
+    kw = dict(caption=cap, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    if S("protect"):
+        kw["protect_content"] = True
+    if   t == "video":     await bot.send_video(chat_id, fid, **kw)
+    elif t == "audio":     await bot.send_audio(chat_id, fid, **kw)
+    elif t == "voice":     await bot.send_voice(chat_id, fid, **kw)
+    elif t == "photo":     await bot.send_photo(chat_id, fid, **kw)
+    elif t == "animation": await bot.send_animation(chat_id, fid, **kw)
+    elif t == "document":  await bot.send_document(chat_id, fid, **kw)
     else:
-        source, target, text = parse_language_pair_and_text(argument, settings["source_lang"], settings["target_lang"])
-    if not text:
-        await update.effective_message.reply_text("استخدم: /translate en ar Hello world أو /translate last")
-        return
-    if not valid_translation_code(source) or not valid_translation_code(target) or target == "auto":
-        await update.effective_message.reply_text("رموز اللغات غير صحيحة. مثال: /translate en ar النص")
-        return
-    translated, replacements = dictionary_translate(text, source, target)
-    await reply_chunks(update, f"الترجمة القاموسية ({source} → {target}):\n{translated}\n\nعدد المطابقات: {replacements}")
-    DB.log(user_id, "translate", f"{source}->{target}")
+        await bot.send_message(chat_id, cap, parse_mode=ParseMode.HTML, reply_markup=reply_markup,
+                               protect_content=bool(S("protect")))
 
+def share_link(iid):
+    return f"https://t.me/{BOT_USERNAME}?start=it_{iid}" if BOT_USERNAME else ""
 
-async def teach_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الأمر متاح للأدمن فقط.")
-        return
-    argument = " ".join(context.args).strip()
-    parts = argument.split(maxsplit=2)
-    source_lang, target_lang = "en", "ar"
-    pair_text = argument
-    if len(parts) >= 3 and valid_translation_code(parts[0]) and valid_translation_code(parts[1]):
-        source_lang, target_lang, pair_text = parts[0].lower(), parts[1].lower(), parts[2]
-    pair = re.split(r"\s*(?:=>|→|\|)\s*", pair_text, maxsplit=1)
-    if len(pair) != 2:
-        await update.effective_message.reply_text("الصيغة: /teach en ar hello => مرحباً")
-        return
-    DB.add_dictionary_entry(source_lang, target_lang, pair[0], pair[1], update.effective_user.id)
-    await update.effective_message.reply_text(f"تم تعليم البوت: {pair[0].strip()} → {pair[1].strip()}")
+async def send_item(bot, chat_id, item, reply_markup=None):
+    t, fid = item["type"], item.get("file_id")
+    cap = f"{TYPE_EMOJI.get(t,'📎')} <b>{make_bold_unicode(item.get('title',''))}</b>"
+    if item.get("caption"):
+        cap += f"\n{LINE}\n{item['caption']}"
+    lnk = share_link(item["id"])
+    if lnk:
+        cap += f"\n{LINE}\n🔗 {lnk}"
+    item["views"] = int(item.get("views", 0)) + 1
+    save_data()
+    await send_media(bot, chat_id, t, fid, cap, reply_markup)
 
+async def send_pack_file(bot, chat_id, item, f, reply_markup=None):
+    cap = (f"{TYPE_EMOJI.get(f.get('type'),'📎')} <b>{make_bold_unicode(f.get('label',''))}</b>\n"
+           f"{LINE}\n🗂 {make_bold_unicode(item.get('title',''))}")
+    item["views"] = int(item.get("views", 0)) + 1
+    save_data()
+    await send_media(bot, chat_id, f.get("type"), f.get("file_id"), cap, reply_markup)
 
-async def delword_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الأمر متاح للأدمن فقط.")
-        return
-    parts = " ".join(context.args).strip().split(maxsplit=2)
-    if len(parts) != 3 or not valid_translation_code(parts[0]) or not valid_translation_code(parts[1]):
-        await update.effective_message.reply_text("الصيغة: /delword en ar hello")
-        return
-    deleted = DB.delete_dictionary_entry(parts[0].lower(), parts[1].lower(), parts[2])
-    await update.effective_message.reply_text("تم الحذف." if deleted else "لم أجد هذه الكلمة.")
+def _has_media(m):
+    return bool(m and (m.photo or m.video or m.document or m.audio or m.animation or m.voice))
 
-
-async def dictstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الأمر متاح للأدمن فقط.")
-        return
-    count = DB.dictionary_count()
-    await update.effective_message.reply_text(f"عدد أزواج الترجمة المحفوظة: {count}")
-
-
-async def importdict_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الأمر متاح للأدمن فقط.")
-        return
-    await update.effective_message.reply_text(
-        "ارفع ملف TXT أو CSV أو JSON مع كتابة caption بالشكل:\n"
-        "/importdict en ar\n\n"
-        "كل سطر في TXT يكون: source<TAB>target أو source => target.\n"
-        "ويمكن أن يكون JSON كقاموس {\"hello\": \"مرحباً\"} أو قائمة source/target."
-    )
-
-
-async def import_dictionary_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الملف مخصص لاستيراد قاموس الأدمن فقط.")
-        return
-    document = update.effective_message.document
-    caption = (update.effective_message.caption or "").strip()
-    match = re.search(r"/importdict(?:@\w+)?\s+(\w+)\s+(\w+)", caption, flags=re.IGNORECASE)
-    if not match:
-        await update.effective_message.reply_text("أرفق caption مثل: /importdict en ar")
-        return
-    source_lang, target_lang = match.group(1).lower(), match.group(2).lower()
-    if not valid_translation_code(source_lang) or not valid_translation_code(target_lang) or source_lang == "auto" or target_lang == "auto":
-        await update.effective_message.reply_text("رموز اللغات غير صحيحة.")
-        return
-    if document.file_size and document.file_size > MAX_FILE_MB * 1024 * 1024:
-        await update.effective_message.reply_text(f"الملف أكبر من الحد المسموح {MAX_FILE_MB} MB.")
-        return
-    temporary = Path(tempfile.mkdtemp(prefix="dict_"))
+async def safe_edit(q, text, parse_mode=ParseMode.HTML, reply_markup=None):
+    """تعديل آمن يعمل مع النصوص والوسائط — يعيد الرسالة الناتجة."""
+    m = q.message
+    if m is not None and not _has_media(m):
+        try:
+            await q.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            return m
+        except Exception as e:
+            log.debug("safe_edit fallback: %s", e)
     try:
-        input_path = temporary / safe_filename(document.file_name or "dictionary.txt")
-        tg_file = await context.bot.get_file(document.file_id)
-        await tg_file.download_to_drive(custom_path=str(input_path))
-        raw = input_path.read_text(encoding="utf-8-sig", errors="replace")
-        pairs = parse_dictionary_lines(raw)
-        for source, target in pairs:
-            DB.add_dictionary_entry(source_lang, target_lang, source, target, update.effective_user.id)
-        await update.effective_message.reply_text(
-            f"تم استيراد {len(pairs)} زوج ترجمة إلى {source_lang} → {target_lang}."
-        )
-        DB.log(update.effective_user.id, "import_dictionary", f"{source_lang}->{target_lang}:{len(pairs)}")
-    except Exception as exc:
-        LOGGER.exception("Dictionary import failed")
-        await update.effective_message.reply_text(f"تعذر استيراد القاموس: {exc}")
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
+        await m.delete()
+    except Exception:
+        pass
+    try:
+        return await q.get_bot().send_message(m.chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception as e:
+        log.warning("safe_edit send failed: %s", e)
+        return None
 
+# ══════════════════ KEYBOARDS ══════════════════
+def main_kb(uid):
+    rows = [[_kb_btn(make_bold_unicode(L("sections")), style="danger")]]
+    rows.append([
+        _kb_btn(make_bold_unicode(L("new")), style="primary"),
+        _kb_btn(make_bold_unicode(L("top")), style="primary"),
+        _kb_btn(make_bold_unicode(L("random")), style="primary"),
+    ])
+    rows.append([
+        _kb_btn(make_bold_unicode(L("fav")), style="success"),
+        _kb_btn(make_bold_unicode(L("search")), style="success"),
+    ])
+    rows.append([
+        _kb_btn(make_bold_unicode(L("cart")), style="primary"),
+        _kb_btn(make_bold_unicode(L("tags")), style="primary"),
+        _kb_btn(make_bold_unicode(L("adv")), style="primary"),
+    ])
+    rows.append([
+        _kb_btn(make_bold_unicode(L("dltop")), style="success"),
+        _kb_btn(make_bold_unicode(L("leader")), style="success"),
+        _kb_btn(make_bold_unicode(L("hist")), style="success"),
+    ])
+    rows.append([_kb_btn(make_bold_unicode(L("feedback")), style="primary")])
+    row = [
+        _kb_btn(make_bold_unicode(L("about")), style="primary"),
+        _kb_btn(make_bold_unicode(L("contact")), style="primary"),
+    ]
+    if is_admin(uid):
+        row.append(_kb_btn(make_bold_unicode(L("admin")), style="danger"))
+    rows.append(row)
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
-async def exportdict_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الأمر متاح للأدمن فقط.")
-        return
-    parts = " ".join(context.args).strip().split()
-    if len(parts) != 2 or not valid_translation_code(parts[0]) or not valid_translation_code(parts[1]):
-        await update.effective_message.reply_text("الصيغة: /exportdict en ar")
-        return
-    rows = DB.export_dictionary(parts[0].lower(), parts[1].lower())
-    output = io.StringIO()
-    writer = csv.writer(output, delimiter="\t", lineterminator="\n")
-    writer.writerow(["source", "target"])
-    for row in rows:
-        writer.writerow([row["source_text"], row["target_text"]])
-    data = io.BytesIO(output.getvalue().encode("utf-8"))
-    data.name = f"dictionary_{parts[0]}_{parts[1]}.tsv"
-    await update.effective_message.reply_document(document=data, caption=f"عدد السجلات: {len(rows)}")
+def sections_kb(off=0, uid=None):
+    rows = []
+    for s in visible_sections(uid):
+        n = len(pub_items(s)) if not is_admin(uid or 0) else len(s["items"])
+        label = f"{s['title']}  •  {n}" + ("  🔐" if s.get("pw") else "") + ("  🙈" if s.get("hidden") else "")
+        rows.append([IB(btn(label, off), callback_data=f"sec:{s['id']}:0", style="primary")])
+    if not rows:
+        rows.append([IB(make_bold_unicode("لا توجد أقسام بعد"), callback_data="noop")])
+    return InlineKeyboardMarkup(rows)
 
+def item_label(it):
+    extra = f"  •  {len(it.get('files', []))} ملفات" if it["type"] == "pack" else ""
+    pin = "📌 " if it.get("pin") else ""
+    return f"{pin}{TYPE_EMOJI.get(it['type'],'📎')} {it['title']}{extra}"
 
-async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    text = get_last_text(update.effective_user.id)
-    if not text:
-        await update.effective_message.reply_text("لا توجد نتيجة محفوظة بعد.")
-        return
-    words = re.findall(r"\b\w+\b", text, flags=re.UNICODE)
-    unique = len({normalize_text(word) for word in words})
-    await update.effective_message.reply_text(
-        f"ملخص آخر نتيجة:\nالأحرف: {len(text)}\nالكلمات: {len(words)}\nالكلمات المختلفة: {unique}\n"
-        f"الأسطر: {text.count(chr(10)) + 1}\nاللغة المتوقعة: {detect_language(text)}"
-    )
+def visible_sections(uid=None):
+    if uid is not None and is_admin(uid):
+        return DATA["sections"]
+    return [s for s in DATA["sections"] if not s.get("hidden")]
 
+def pub_items(sec):
+    """المواد الظاهرة للمستخدم: غير مخفية وحان وقت نشرها."""
+    now = int(time.time())
+    return [it for it in sorted_items(sec)
+            if not it.get("hidden") and int(it.get("publish_at") or 0) <= now]
 
-async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
+def item_rating(it):
+    r = it.get("rate") or {}
+    if not r:
+        return 0.0, 0
+    vals = [int(v) for v in r.values()]
+    return round(sum(vals) / len(vals), 1), len(vals)
+
+def note_dl(it):
+    it["dl"] = int(it.get("dl", 0)) + 1
+    it["dlog"] = ([*(it.get("dlog") or []), int(time.time())])[-300:]
+    save_data()
+
+def dl_week(it):
+    wk = int(time.time()) - 7 * 86400
+    return sum(1 for t in (it.get("dlog") or []) if t > wk)
+
+def dl_ok(uid):
+    lim = int(S("daily_limit", 0) or 0)
+    if lim <= 0 or is_admin(uid):
+        return True
+    u = USERS.get(str(uid)) or {}
+    today = time.strftime("%Y-%m-%d")
+    if u.get("dl_day") != today:
+        u["dl_day"], u["dl_cnt"] = today, 0
+    if int(u.get("dl_cnt", 0)) >= lim:
+        return False
+    u["dl_cnt"] = int(u.get("dl_cnt", 0)) + 1
+    save_users()
+    return True
+
+def award(uid, pts=1):
+    u = USERS.get(str(uid))
+    if not u:
         return
-    query = " ".join(context.args).strip()
-    text = get_last_text(update.effective_user.id)
-    if not query or not text:
-        await update.effective_message.reply_text("استخدم /search كلمة بعد استخراج ملف.")
+    u["points"] = int(u.get("points", 0)) + pts
+    save_users()
+
+def level_of(points):
+    for i, need in enumerate([0, 10, 30, 60, 120, 250, 500], start=1):
+        if points < need:
+            return max(1, i - 1)
+    return 7
+
+def note_hist(uid, iid):
+    u = USERS.get(str(uid))
+    if not u:
         return
-    matches = [line for line in text.splitlines() if query.casefold() in line.casefold()]
-    if matches:
-        await reply_chunks(update, "الأسطر المطابقة:\n" + "\n".join(matches[:100]))
+    h = [x for x in (u.get("hist") or []) if x != iid]
+    h.insert(0, iid)
+    u["hist"] = h[:15]
+    save_users()
+
+def all_tags():
+    tags = {}
+    for s, it in all_items():
+        for t in (it.get("tags") or []):
+            tags[t] = tags.get(t, 0) + 1
+    return dict(sorted(tags.items(), key=lambda kv: -kv[1]))
+
+def sorted_items(sec):
+    return sorted(sec["items"], key=lambda i: (0 if i.get("pin") else 1, -int(i.get("ts", 0))))
+
+def items_kb(sec, page, off=0):
+    items = pub_items(sec)
+    pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    rows = []
+    for it in items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
+        rows.append([IB(btn(item_label(it), off),
+                        callback_data=f"itm:{sec['id']}:{it['id']}:{page}", style="primary")])
+    nav = []
+    if page > 0:            nav.append(IB("◀️", callback_data=f"sec:{sec['id']}:{page-1}", style="primary"))
+    nav.append(IB(f"{page+1}/{pages}", callback_data="noop"))
+    if page < pages - 1:    nav.append(IB("▶️", callback_data=f"sec:{sec['id']}:{page+1}", style="primary"))
+    if len(nav) > 1: rows.append(nav)
+    rows.append([IB(make_bold_unicode("🔎 بحث داخل القسم"), callback_data=f"ssrch:{sec['id']}", style="success")])
+    rows.append([IB(make_bold_unicode(L("back")), callback_data="sections", style="danger")])
+    return InlineKeyboardMarkup(rows)
+
+def items_texts(sec, page):
+    items = pub_items(sec)
+    return [item_label(it) for it in items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]]
+
+def item_kb(sid, page, uid, iid):
+    fav = iid in USERS.get(str(uid), {}).get("fav", [])
+    incart = iid in (USERS.get(str(uid), {}).get("cart") or [])
+    _s, _it = find_item(iid)
+    avg, cnt = item_rating(_it) if _it else (0, 0)
+    rows = [[
+        IB(make_bold_unicode("💔 إزالة من المفضلة" if fav else "⭐ أضف للمفضلة"),
+           callback_data=f"fav:{iid}", style="success"),
+        IB(make_bold_unicode("🧺 إزالة من السلة" if incart else "🧺 أضف للسلة"),
+           callback_data=f"cart:{iid}", style="primary"),
+    ]]
+    rows.append([IB(make_bold_unicode(f"⭐ التقييم {avg}/5 ({cnt})"), callback_data="noop", style="primary")])
+    rows.append([IB(str(n) + "⭐", callback_data=f"rate:{iid}:{n}", style="success") for n in range(1, 6)])
+    rows.append([IB(make_bold_unicode("🔁 مواد مشابهة"), callback_data=f"sim:{sid}:{iid}", style="primary"),
+                 IB(make_bold_unicode("🔗 مشاركة"), callback_data=f"shr:{iid}", style="primary")])
+    if is_admin(uid):
+        rows.append([
+            IB(make_bold_unicode("📌 تثبيت/إلغاء"), callback_data=f"pin:{sid}:{iid}", style="primary"),
+            IB(make_bold_unicode("🗑 حذف"), callback_data=f"adm:delitem:{sid}:{iid}", style="danger"),
+        ])
+    rows.append([IB(make_bold_unicode(L("back")), callback_data=f"sec:{sid}:{page}", style="danger")])
+    return InlineKeyboardMarkup(rows)
+
+def pack_kb(sec, item, page, uid, off=0):
+    rows = []
+    for idx, f in enumerate(item.get("files", [])):
+        lbl = f"{TYPE_EMOJI.get(f.get('type'),'📎')} {f.get('label','')}"
+        rows.append([IB(btn(lbl, off),
+                        callback_data=f"pf:{sec['id']}:{item['id']}:{idx}:{page}", style="primary")])
+    if not rows:
+        rows.append([IB(make_bold_unicode("لا توجد ملفات في هذه القائمة"), callback_data="noop")])
     else:
-        await update.effective_message.reply_text("لم أجد تطابقاً في آخر نتيجة.")
+        rows.append([IB(make_bold_unicode("📥 إرسال كل الملفات"),
+                        callback_data=f"pall:{sec['id']}:{item['id']}:{page}", style="success")])
+    fav = item["id"] in USERS.get(str(uid), {}).get("fav", [])
+    incart = item["id"] in (USERS.get(str(uid), {}).get("cart") or [])
+    rows.append([IB(make_bold_unicode("💔 إزالة من المفضلة" if fav else "⭐ أضف للمفضلة"),
+                    callback_data=f"fav:{item['id']}", style="success"),
+                 IB(make_bold_unicode("🧺 إزالة من السلة" if incart else "🧺 أضف للسلة"),
+                    callback_data=f"cart:{item['id']}", style="primary")])
+    if is_admin(uid):
+        rows.append([IB(make_bold_unicode("➕ إضافة ملفات"), callback_data=f"padd:{sec['id']}:{item['id']}", style="success"),
+                     IB(make_bold_unicode("🧹 إدارة الملفات"), callback_data=f"pmng:{sec['id']}:{item['id']}", style="primary")])
+        rows.append([IB(make_bold_unicode("🖼 تعيين / تغيير الغلاف"), callback_data=f"pcov:{sec['id']}:{item['id']}", style="primary"),
+                     IB(make_bold_unicode("📌 تثبيت/إلغاء"), callback_data=f"pin:{sec['id']}:{item['id']}", style="primary")])
+    rows.append([IB(make_bold_unicode(L("back")), callback_data=f"sec:{sec['id']}:{page}", style="danger")])
+    return InlineKeyboardMarkup(rows)
 
+def pack_files_admin_kb(sec, item):
+    rows = []
+    for idx, f in enumerate(item.get("files", [])):
+        rows.append([
+            IB(make_bold_unicode(f"{TYPE_EMOJI.get(f.get('type'),'📎')} {str(f.get('label',''))[:28]}"), callback_data="noop"),
+            IB("🔼", callback_data=f"pmv:{sec['id']}:{item['id']}:{idx}:up", style="success"),
+            IB("🔽", callback_data=f"pmv:{sec['id']}:{item['id']}:{idx}:dn", style="primary"),
+            IB("✏️", callback_data=f"pren:{sec['id']}:{item['id']}:{idx}", style="primary"),
+            IB("🗑", callback_data=f"pdel:{sec['id']}:{item['id']}:{idx}", style="danger"),
+        ])
+    rows.append([IB(make_bold_unicode("➕ إضافة ملفات"), callback_data=f"padd:{sec['id']}:{item['id']}", style="success")])
+    rows.append([IB(make_bold_unicode(L("back")), callback_data=f"itm:{sec['id']}:{item['id']}:0", style="danger")])
+    return InlineKeyboardMarkup(rows)
 
-async def last_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    path = last_result_path(update.effective_user.id)
-    if not path:
-        await update.effective_message.reply_text("لا توجد نتيجة محفوظة بعد.")
-        return
-    with path.open("rb") as handle:
-        await update.effective_message.reply_document(document=handle, caption="آخر نتيجة OCR محفوظة")
+def pack_header(sec, item):
+    lnk = share_link(item["id"])
+    return (f"🗂 <b>{make_bold_unicode(item.get('title',''))}</b>\n{LINE}\n"
+            f"{item.get('caption') or 'اختر الجودة التي تريدها 👇'}\n"
+            f"📦 عدد الملفات: <b>{len(item.get('files', []))}</b> • 👁 <b>{item.get('views',0)}</b>\n"
+            + (f"🔗 {lnk}\n" if lnk else "") + LINE)
 
-
-async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    path = last_result_path(update.effective_user.id)
-    if path:
-        path.unlink(missing_ok=True)
-    DB.set_setting(update.effective_user.id, "last_result_path", "")
-    await update.effective_message.reply_text("تم حذف آخر نتيجة محفوظة من مساحة البوت.")
-
-
-async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    message = " ".join(context.args).strip()
-    if not message:
-        await update.effective_message.reply_text("استخدم /feedback ثم اكتب اقتراحك أو مشكلتك.")
-        return
-    DB.add_feedback(update.effective_user.id, message)
-    await update.effective_message.reply_text("تم تسجيل ملاحظتك، شكراً لك.")
-    if ADMIN_ID:
+async def show_pack(ctx, q, sec, it, page, uid):
+    head = pack_header(sec, it)
+    build = lambda off=0: pack_kb(sec, it, page, uid, off)
+    texts = [f.get("label", "") for f in it.get("files", [])]
+    cover = it.get("cover")
+    m = q.message
+    if cover:
         try:
-            await context.bot.send_message(ADMIN_ID, f"ملاحظة من {user_label(update)}:\n{message}")
+            await m.delete()
         except Exception:
-            LOGGER.exception("Could not forward feedback")
+            pass
+        msg = await q.get_bot().send_photo(m.chat_id, cover, caption=head,
+                                           parse_mode=ParseMode.HTML, reply_markup=build(0))
+    else:
+        msg = await safe_edit(q, head, reply_markup=build(0))
+    start_marquee(ctx, msg, build, texts)
 
+def admin_kb():
+    st = DATA.get("settings", {})
+    rows = [
+        [IB(make_bold_unicode("📤 رفع محتوى لقسم"), callback_data="adm:upload", style="success")],
+        [IB(make_bold_unicode("🗂 إنشاء قائمة متعددة الملفات"), callback_data="adm:pack", style="success")],
+        [IB(make_bold_unicode("➕ إضافة قسم"), callback_data="adm:addsec", style="success"),
+         IB(make_bold_unicode("✏️ تسمية قسم"), callback_data="adm:rensec", style="primary")],
+        [IB(make_bold_unicode("🗑 حذف قسم"), callback_data="adm:delsec", style="danger"),
+         IB(make_bold_unicode("↕️ ترتيب الأقسام"), callback_data="adm:order", style="primary")],
+        [IB(make_bold_unicode("🧹 إدارة محتوى قسم"), callback_data="adm:manage", style="primary")],
+        [IB(make_bold_unicode("🏷 تعديل أسماء الأزرار"), callback_data="adm:labels", style="primary")],
+        [IB(make_bold_unicode("📝 نص الترحيب"), callback_data="adm:txt:welcome", style="primary"),
+         IB(make_bold_unicode("ℹ️ نص حول"), callback_data="adm:txt:about", style="primary")],
+        [IB(make_bold_unicode("📞 نص التواصل"), callback_data="adm:txt:contact", style="primary"),
+         IB(make_bold_unicode("🏴 اسم المؤسسة"), callback_data="adm:txt:brand", style="primary")],
+        [IB(make_bold_unicode("📣 إعلان للجميع"), callback_data="adm:bc", style="primary"),
+         IB(make_bold_unicode("👥 المستخدمون"), callback_data="adm:users", style="primary")],
+        [IB(make_bold_unicode("🚫 حظر / فك حظر"), callback_data="adm:ban", style="danger"),
+         IB(make_bold_unicode("📊 إحصائيات"), callback_data="adm:stats", style="primary")],
+        [IB(make_bold_unicode("💾 نسخة احتياطية الآن"), callback_data="adm:backup", style="success"),
+         IB(make_bold_unicode("♻️ استعادة نسخة"), callback_data="adm:restore", style="danger")],
+        [IB(make_bold_unicode("👑 إضافة أدمن"), callback_data="adm:addadmin", style="primary"),
+         IB(make_bold_unicode("🗒 سجل النشاط"), callback_data="adm:logs", style="primary")],
+        [IB(make_bold_unicode(("🔧 الصيانة: تعمل" if st.get("maintenance") else "🔧 الصيانة: متوقفة")),
+            callback_data="adm:tg:maintenance", style="danger"),
+         IB(make_bold_unicode(("🔒 الحماية: مفعّلة" if st.get("protect") else "🔓 الحماية: متوقفة")),
+            callback_data="adm:tg:protect", style="primary")],
+        [IB(make_bold_unicode("📢 الاشتراك الإجباري"), callback_data="adm:forcesub", style="primary")],
+        [IB(make_bold_unicode({"scroll": "🎞 العناوين: شريط متحرك", "wrap": "📃 العناوين: نص كامل",
+                               "off": "⏹ العناوين: بلا حركة"}[(st.get("marquee") or "scroll")]),
+            callback_data="adm:marq", style="success")],
+        [IB(make_bold_unicode("🔔 إشعار الجديد: يعمل" if st.get("notify_new") else "🔕 إشعار الجديد: متوقف"),
+            callback_data="adm:tg:notify_new", style="primary"),
+         IB(make_bold_unicode(f"🚦 حد التنزيل: {st.get('daily_limit', 0) or 'بلا حد'}"),
+            callback_data="adm:limit", style="primary")],
+        [IB(make_bold_unicode("📌 شريط الإعلان"), callback_data="adm:banner", style="primary"),
+         IB(make_bold_unicode("⚡ رفع مجمّع سريع"), callback_data="adm:bulk", style="success")],
+        [IB(make_bold_unicode("♻️ سلة المحذوفات"), callback_data="adm:trash", style="danger"),
+         IB(make_bold_unicode("🎖 المتصدرون"), callback_data="adm:leader", style="primary")],
+    ]
+    return InlineKeyboardMarkup(rows)
 
-async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    await update.effective_message.reply_text(
-        "تُعالج الملفات مؤقتاً لاستخراج الصور والنص. تُحفظ آخر نتيجة نصية فقط لتفعيل /last و /translate last، "
-        "وتُحفظ إعداداتك والقاموس في قاعدة بيانات البوت. استخدم /clear لحذف آخر نتيجة. "
-        "لا تضع مستندات حساسة إذا لم تكن قد أعددت تخزيناً خاصاً وآمناً على الخادم."
-    )
+def pick_section_kb(action):
+    rows = [[IB(make_bold_unicode(s["title"]), callback_data=f"pick:{action}:{s['id']}", style="primary")]
+            for s in DATA["sections"]]
+    rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="danger")])
+    return InlineKeyboardMarkup(rows)
 
+def labels_kb():
+    rows = [[IB(make_bold_unicode(f"{k} : {v}"), callback_data=f"lbl:{k}", style="primary")]
+            for k, v in DATA["labels"].items()]
+    rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="danger")])
+    return InlineKeyboardMarkup(rows)
 
-async def admin_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الأمر متاح للأدمن فقط.")
-        return
-    stats = DB.overall_stats()
-    await update.effective_message.reply_text(
-        "إحصاءات البوت:\n"
-        f"المستخدمون: {stats['users']}\nالمستخدمون غير المحظورين: {stats['active']}\n"
-        f"سجلات الاستخدام: {stats['logs']}\nملاحظات المستخدمين: {stats['feedback']}\n"
-        f"أزواج القاموس: {stats['entries']}"
-    )
+def order_kb():
+    rows = []
+    for s in DATA["sections"]:
+        rows.append([
+            IB("🔼", callback_data=f"mv:up:{s['id']}", style="success"),
+            IB(make_bold_unicode(s["title"]), callback_data="noop"),
+            IB("🔽", callback_data=f"mv:dn:{s['id']}", style="danger"),
+        ])
+    rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="danger")])
+    return InlineKeyboardMarkup(rows)
 
+def manage_items_kb(sec, page=0):
+    items = sorted_items(sec)
+    pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, pages - 1))
+    rows = []
+    for it in items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
+        rows.append([
+            IB(make_bold_unicode(f"{TYPE_EMOJI.get(it['type'],'📎')} {it['title'][:28]}"), callback_data="noop"),
+            IB("📌", callback_data=f"pin:{sec['id']}:{it['id']}", style="success"),
+            IB("✏️", callback_data=f"ren:{sec['id']}:{it['id']}", style="primary"),
+            IB("↔️", callback_data=f"mvitem:{sec['id']}:{it['id']}", style="primary"),
+            IB("🗑", callback_data=f"adm:delitem:{sec['id']}:{it['id']}", style="danger"),
+        ])
+        rows.append([
+            IB("🏷 وسوم", callback_data=f"tag:{sec['id']}:{it['id']}", style="primary"),
+            IB("🙈 إظهار" if it.get("hidden") else "🙈 إخفاء", callback_data=f"hid:{sec['id']}:{it['id']}", style="primary"),
+            IB("⏰ جدولة", callback_data=f"sch:{sec['id']}:{it['id']}", style="primary"),
+            IB("📑 نسخ", callback_data=f"cpitem:{sec['id']}:{it['id']}", style="success"),
+        ])
+    nav = []
+    if page > 0:         nav.append(IB("◀️", callback_data=f"mng:{sec['id']}:{page-1}", style="primary"))
+    nav.append(IB(f"{page+1}/{pages}", callback_data="noop"))
+    if page < pages - 1: nav.append(IB("▶️", callback_data=f"mng:{sec['id']}:{page+1}", style="primary"))
+    if len(nav) > 1: rows.append(nav)
+    rows.append([IB(make_bold_unicode("📄 تصدير قائمة القسم"), callback_data=f"mngexp:{sec['id']}", style="success"),
+                 IB(make_bold_unicode("📊 إحصائيات القسم"), callback_data=f"secst:{sec['id']}", style="primary")])
+    rows.append([IB(make_bold_unicode("🔐 قفل/فتح القسم"), callback_data=f"secpw:{sec['id']}", style="danger"),
+                 IB(make_bold_unicode("🙈 إخفاء/إظهار القسم"), callback_data=f"sechid:{sec['id']}", style="primary")])
+    rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="danger")])
+    return InlineKeyboardMarkup(rows)
 
-async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الأمر متاح للأدمن فقط.")
-        return
-    if not context.args or not context.args[0].isdigit():
-        await update.effective_message.reply_text("الصيغة: /ban user_id")
-        return
-    DB.set_banned(int(context.args[0]), True)
-    await update.effective_message.reply_text("تم الحظر.")
+def results_kb(pairs, off=0, back="sections"):
+    rows = [[IB(btn(f"{TYPE_EMOJI.get(it['type'],'📎')} {it['title']} • {s['title']}", off),
+                callback_data=f"itm:{s['id']}:{it['id']}:0", style="primary")] for s, it in pairs]
+    if not rows:
+        rows.append([IB(make_bold_unicode("لا توجد نتائج"), callback_data="noop")])
+    rows.append([IB(make_bold_unicode(L("back")), callback_data=back, style="danger")])
+    return InlineKeyboardMarkup(rows)
 
+# ══════════════════ HEADERS ══════════════════
+def welcome_text():
+    return (f"{DATA.get('flag','🏴')} <b>{make_bold_unicode(DATA['brand'])}</b> {DATA.get('flag','🏴')}\n"
+            f"{LINE}\n{DATA['welcome']}\n{LINE}")
 
-async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الأمر متاح للأدمن فقط.")
-        return
-    if not context.args or not context.args[0].isdigit():
-        await update.effective_message.reply_text("الصيغة: /unban user_id")
-        return
-    DB.set_banned(int(context.args[0]), False)
-    await update.effective_message.reply_text("تم إلغاء الحظر.")
+def sections_header():
+    total = sum(len(s["items"]) for s in DATA["sections"])
+    ban = (S("banner") or "").strip()
+    top = (f"📌 <b>{html.escape(ban)}</b>\n{LINE}\n" if ban else "")
+    return (top + f"📚 <b>{make_bold_unicode('أقسام الأرشيف')}</b>\n{LINE}\n"
+            f"🗂 الأقسام: <b>{len(DATA['sections'])}</b> • 📦 المواد: <b>{total}</b>\n{LINE}")
 
-
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update):
-        await update.effective_message.reply_text("هذا الأمر متاح للأدمن فقط.")
-        return
-    text = " ".join(context.args).strip()
-    if not text:
-        await update.effective_message.reply_text("الصيغة: /broadcast نص الرسالة")
-        return
-    sent = 0
-    failed = 0
-    for user_id in DB.user_ids():
-        try:
-            await context.bot.send_message(user_id, text)
-            sent += 1
-            await asyncio.sleep(0.05)
-        except Exception:
-            failed += 1
-    await update.effective_message.reply_text(f"اكتمل الإرسال. نجح: {sent}، فشل: {failed}.")
-
-
-async def process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, input_path: Path, is_pdf: bool) -> None:
-    user_id = update.effective_user.id
-    settings = DB.get_settings(user_id)
-    temporary = Path(tempfile.mkdtemp(prefix="ocr_"))
-    status = await update.effective_message.reply_text("بدأت المعالجة. قد يستغرق OCR وقتاً حسب عدد الصفحات.")
+# ══════════════════ BACKUP / RESTORE ══════════════════
+async def do_backup(bot, chat_id=None, force=False):
+    target = chat_id or BACKUP_CHAT_ID
+    if not target:
+        return False
+    if not force and not (DIRTY["data"] or DIRTY["users"]):
+        return False
     try:
-        async with PROCESS_SEMAPHORE:
-            if is_pdf:
-                result = await asyncio.to_thread(process_pdf_file, input_path, temporary, settings["ocr_lang"])
+        stamp = time.strftime("%Y-%m-%d %H:%M")
+        for path, name in ((DATA_FILE, "archive.json"), (USERS_FILE, "users.json")):
+            if not os.path.exists(path):
+                continue
+            with open(path, "rb") as f:
+                await bot.send_document(target, InputFile(f, filename=name),
+                                        caption=f"💾 نسخة احتياطية • {stamp}")
+        DIRTY["data"] = DIRTY["users"] = False
+        return True
+    except Exception as e:
+        log.warning("backup failed: %s", e)
+        return False
+
+async def job_backup(ctx: ContextTypes.DEFAULT_TYPE):
+    await do_backup(ctx.bot)
+
+def apply_restore(payload, kind):
+    global DATA, USERS
+    if kind == "data":
+        DATA.clear(); DATA.update(_load_obj(payload, DEFAULT_DATA)); save_data()
+    else:
+        USERS.clear(); USERS.update(payload); save_users()
+
+def _load_obj(d, default):
+    for k, v in default.items():
+        d.setdefault(k, v)
+    for k, v in default.get("labels", {}).items():
+        d["labels"].setdefault(k, v)
+    for k, v in default.get("settings", {}).items():
+        d["settings"].setdefault(k, v)
+    return d
+
+async def notify_new(bot, sec, it):
+    """إشعار المستخدمين بالمادة الجديدة إن كان الإشعار مفعّلاً."""
+    if not S("notify_new"):
+        return
+    txt = (f"🆕 <b>{make_bold_unicode('جديد في الأرشيف')}</b>\n{LINE}\n"
+           f"{TYPE_EMOJI.get(it['type'],'📎')} <b>{html.escape(it.get('title',''))}</b>\n"
+           f"🗂 {html.escape(sec['title'])}\n{LINE}")
+    kb = InlineKeyboardMarkup([[IB(make_bold_unicode("📂 اذهب للمادة"),
+                                   callback_data=f"itm:{sec['id']}:{it['id']}:0", style="success")]])
+    for key, u in list(USERS.items()):
+        if u.get("banned") or u.get("mute_new"):
+            continue
+        try:
+            await bot.send_message(int(key), txt, parse_mode=ParseMode.HTML, reply_markup=kb)
+        except Exception:
+            pass
+
+# ══════════════════ FORCE SUBSCRIBE ══════════════════
+async def sub_ok(bot, uid):
+    ch = (S("force_sub") or "").strip()
+    if not ch:
+        return True
+    if not ch.startswith("@") and not ch.startswith("-100"):
+        ch = "@" + ch
+    try:
+        m = await bot.get_chat_member(ch, uid)
+        return m.status in ("member", "administrator", "creator", "owner")
+    except Exception:
+        return True
+
+def sub_kb():
+    ch = (S("force_sub") or "").lstrip("@")
+    return InlineKeyboardMarkup([
+        [IB(make_bold_unicode("📢 اشترك في القناة"), url=f"https://t.me/{ch}", style="primary")],
+        [IB(make_bold_unicode("✅ تحققت، تابع"), callback_data="checksub", style="success")],
+    ])
+
+# ══════════════════ COMMANDS ══════════════════
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    u = note_user(update.effective_user)
+    if u.get("banned"):
+        return
+    uid = update.effective_user.id
+    if S("maintenance") and not is_admin(uid):
+        await update.message.reply_text("🔧 البوت في وضع الصيانة مؤقتاً، جزاكم الله خيراً على صبركم.")
+        return
+    if not await sub_ok(ctx.bot, uid):
+        await update.message.reply_text("📢 للاستفادة من الأرشيف يرجى الاشتراك في القناة أولاً:",
+                                        reply_markup=sub_kb()); return
+    # رابط مشاركة عميق: /start it_i123
+    args = ctx.args or []
+    if args and args[0].startswith("it_"):
+        iid = args[0][3:]
+        s, it = find_item(iid)
+        if it:
+            if it["type"] == "pack":
+                head = pack_header(s, it)
+                kb = pack_kb(s, it, 0, uid)
+                if it.get("cover"):
+                    await ctx.bot.send_photo(update.effective_chat.id, it["cover"], caption=head,
+                                             parse_mode=ParseMode.HTML, reply_markup=kb)
+                else:
+                    await update.message.reply_text(head, parse_mode=ParseMode.HTML, reply_markup=kb)
             else:
-                result = await asyncio.to_thread(process_image_file, input_path, temporary, settings["ocr_lang"])
+                await send_item(ctx.bot, update.effective_chat.id, it, item_kb(s["id"], 0, uid, iid))
+            return
+    if args and args[0].startswith("sec_"):
+        sec = get_section(args[0][4:])
+        if sec and not sec.get("hidden"):
+            head = f"{sec['title']}\n{LINE}\n{sec.get('desc') or 'اختر المادة التي تريدها 👇'}\n{LINE}"
+            m = await update.message.reply_text(head, parse_mode=ParseMode.HTML, reply_markup=items_kb(sec, 0, 0))
+            start_marquee(ctx, m, lambda off=0: items_kb(sec, 0, off), items_texts(sec, 0))
+            return
+    who = ("@" + update.effective_user.username) if update.effective_user.username else (update.effective_user.first_name or "زائرنا")
+    await update.message.reply_text(
+        f"{welcome_text()}\n\n🌿 <b>{make_bold_unicode('السلام عليكم ورحمة الله وبركاته')}</b>\n<b>{make_bold_unicode(who)}</b>",
+        parse_mode=ParseMode.HTML, reply_markup=main_kb(uid))
 
-        text_path = save_last_result(user_id, result.text, result.source_name)
-        DB.log(user_id, "process_pdf" if is_pdf else "process_image", result.source_name)
+async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    await update.message.reply_text(f"🛠 <b>{make_bold_unicode('لوحة الأدمن')}</b>\n{LINE}",
+                                    parse_mode=ParseMode.HTML, reply_markup=admin_kb())
+
+async def cmd_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"🆔 <code>{update.effective_user.id}</code>", parse_mode=ParseMode.HTML)
+
+async def cmd_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    ok = await do_backup(ctx.bot, chat_id=update.effective_chat.id, force=True)
+    if BACKUP_CHAT_ID:
+        await do_backup(ctx.bot, force=True)
+    await update.message.reply_text("💾 تم إرسال النسخة الاحتياطية." if ok else "⚠️ تعذّر إنشاء النسخة.")
+
+async def cmd_restore(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    ctx.user_data["await"] = ("restore", None)
+    await update.message.reply_text(
+        f"♻️ أرسل الآن ملف <b>archive.json</b> (أو users.json) لاستعادته.\n{LINE}\n"
+        "يمكنك إعادة توجيه الملف من قناة النسخ الاحتياطي مباشرة.", parse_mode=ParseMode.HTML)
+
+# ══════════════════ CALLBACKS ══════════════════
+async def on_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = q.from_user.id
+    data = q.data or ""
+    await q.answer()
+
+    if data == "noop":
+        return
+    # إبطال أي شريط متحرك قديم قبل أي انتقال (إصلاح جليتش الرجوع)
+    try:
+        if q.message:
+            stop_marquee(ctx, q.message.chat_id)
+            new_view(q.message.chat_id)
+    except Exception:
+        pass
+    if not rate_ok(uid, 0.3):
+        return
+    if S("maintenance") and not is_admin(uid):
+        await q.answer("🔧 البوت في وضع الصيانة", show_alert=True); return
+
+    if data == "checksub":
+        if await sub_ok(ctx.bot, uid):
+            await safe_edit(q, "✅ جزاك الله خيراً، يمكنك الآن استخدام الأرشيف.")
+            await ctx.bot.send_message(q.message.chat_id, welcome_text(), parse_mode=ParseMode.HTML,
+                                       reply_markup=main_kb(uid))
+        else:
+            await q.answer("⚠️ لم أجد اشتراكك بعد", show_alert=True)
+        return
+    if not await sub_ok(ctx.bot, uid):
+        await safe_edit(q, "📢 يرجى الاشتراك في القناة أولاً:", reply_markup=sub_kb()); return
+
+    # ── القوائم العامة ──
+    if data == "sections":
+        msg = await safe_edit(q, sections_header(), reply_markup=sections_kb(0, uid))
+        start_marquee(ctx, msg, lambda off=0: sections_kb(off, uid),
+                      [f"{s['title']} • {len(s['items'])}" for s in DATA["sections"]])
+        return
+
+    if data.startswith("sec:"):
+        _, sid, page = data.split(":")
+        sec = get_section(sid)
+        if not sec:
+            await safe_edit(q, "⚠️ القسم غير موجود."); return
+        if sec.get("hidden") and not is_admin(uid):
+            await q.answer("🙈 هذا القسم غير متاح حالياً", show_alert=True); return
+        if sec.get("pw") and not is_admin(uid) and sid not in (ctx.user_data.get("unlocked") or []):
+            ctx.user_data["unlock"] = sid
+            await safe_edit(q, f"🔐 <b>{make_bold_unicode('قسم مقفل')}</b>\n{LINE}\nأرسل كلمة المرور للدخول:"); return
+        page = int(page)
+        head = (f"{sec['title']}\n{LINE}\n"
+                f"{sec.get('desc') or 'اختر المادة التي تريدها 👇'}\n"
+                f"📦 العدد: <b>{len(sec['items'])}</b>\n{LINE}")
+        msg = await safe_edit(q, head, reply_markup=items_kb(sec, page, 0))
+        start_marquee(ctx, msg, lambda off=0: items_kb(sec, page, off), items_texts(sec, page))
+        return
+
+    if data.startswith("ssrch:"):
+        sid = data.split(":")[1]
+        ctx.user_data["search"] = sid
+        await safe_edit(q, "🔎 أرسل كلمة البحث داخل هذا القسم:"); return
+
+    if data.startswith("itm:"):
+        _, sid, iid, page = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        if not it:
+            await q.answer("⚠️ العنصر محذوف", show_alert=True); return
+        if it.get("hidden") and not is_admin(uid):
+            await q.answer("🙈 هذه المادة غير متاحة", show_alert=True); return
+        if int(it.get("publish_at") or 0) > int(time.time()) and not is_admin(uid):
+            await q.answer("⏰ سيُنشر قريباً إن شاء الله", show_alert=True); return
+        if it["type"] == "pack":
+            note_hist(uid, iid)
+            await show_pack(ctx, q, sec, it, int(page), uid)
+            return
+        if not dl_ok(uid):
+            await q.answer("🚦 بلغت حدّك اليومي، عد غداً بإذن الله", show_alert=True); return
+        note_hist(uid, iid); note_dl(it); award(uid, 1)
+        await send_item(ctx.bot, q.message.chat_id, it, item_kb(sid, int(page), uid, iid))
+        return
+
+    if data.startswith("fav:"):
+        iid = data.split(":")[1]
+        u = USERS.get(str(uid))
+        if not u:
+            return
+        fav = u.setdefault("fav", [])
+        if iid in fav:
+            fav.remove(iid); await q.answer("💔 أُزيلت من المفضلة", show_alert=False)
+        else:
+            fav.append(iid); await q.answer("⭐ أُضيفت للمفضلة", show_alert=False)
+        save_users(); return
+
+    if data.startswith("pf:"):
+        _, sid, iid, idx, page = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        files = it.get("files", []) if it else []
+        if not files or int(idx) >= len(files):
+            await q.answer("⚠️ الملف غير موجود", show_alert=True); return
+        if not dl_ok(uid):
+            await q.answer("🚦 بلغت حدّك اليومي، عد غداً بإذن الله", show_alert=True); return
+        note_dl(it); award(uid, 1)
+        await send_pack_file(ctx.bot, q.message.chat_id, it, files[int(idx)])
+        return
+
+    if data.startswith("pall:"):
+        _, sid, iid, page = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        files = it.get("files", []) if it else []
+        if not files:
+            await q.answer("⚠️ لا توجد ملفات", show_alert=True); return
+        if not dl_ok(uid):
+            await q.answer("🚦 بلغت حدّك اليومي، عد غداً بإذن الله", show_alert=True); return
+        note_dl(it); award(uid, 2)
+        for f in files:
+            try:
+                await send_pack_file(ctx.bot, q.message.chat_id, it, f)
+            except Exception as e:
+                log.warning("send pack file failed: %s", e)
+        return
+
+    if data.startswith("cart:"):
+        iid = data.split(":")[1]
+        u = USERS.get(str(uid))
+        if not u:
+            return
+        c = u.setdefault("cart", [])
+        if iid in c:
+            c.remove(iid); await q.answer("🧺 أُزيلت من السلة")
+        else:
+            c.append(iid); await q.answer("🧺 أُضيفت للسلة")
+        save_users(); return
+
+    if data == "cart:send":
+        u = USERS.get(str(uid)) or {}
+        ids = list(u.get("cart") or [])
+        if not ids:
+            await q.answer("🧺 السلة فارغة", show_alert=True); return
+        if not dl_ok(uid):
+            await q.answer("🚦 بلغت حدّك اليومي", show_alert=True); return
+        for iid in ids:
+            s2, it2 = find_item(iid)
+            if not it2:
+                continue
+            try:
+                if it2["type"] == "pack":
+                    for f in it2.get("files", []):
+                        await send_pack_file(ctx.bot, q.message.chat_id, it2, f)
+                else:
+                    await send_item(ctx.bot, q.message.chat_id, it2)
+                note_dl(it2)
+            except Exception as e:
+                log.warning("cart send: %s", e)
+        award(uid, len(ids))
+        await q.answer("📥 تم إرسال محتويات السلة"); return
+
+    if data == "cart:clear":
+        u = USERS.get(str(uid))
+        if u:
+            u["cart"] = []; save_users()
+        await safe_edit(q, "🧺 تم تفريغ السلة."); return
+
+    if data.startswith("rate:"):
+        _, iid, n = data.split(":")
+        s2, it2 = find_item(iid)
+        if not it2:
+            return
+        it2.setdefault("rate", {})[str(uid)] = int(n)
+        save_data(); award(uid, 1)
+        avg, cnt = item_rating(it2)
+        await q.answer(f"⭐ شكراً لك — المعدل الآن {avg}/5 من {cnt} تقييم", show_alert=True); return
+
+    if data.startswith("shr:"):
+        iid = data.split(":")[1]
+        lnk = share_link(iid)
+        await q.answer(lnk or "⚠️ ضع BOT_USERNAME في الكود لتفعيل الروابط", show_alert=True); return
+
+    if data.startswith("sim:"):
+        _, sid, iid = data.split(":")
+        s2, it2 = find_item(iid)
+        pool = []
+        tags = set((it2.get("tags") or []) if it2 else [])
+        for ss, ii in all_items():
+            if ii["id"] == iid or ii.get("hidden"):
+                continue
+            score = (2 if ss["id"] == sid else 0) + len(tags & set(ii.get("tags") or []))
+            if score:
+                pool.append((score, ss, ii))
+        pool.sort(key=lambda x: -x[0])
+        pairs = [(ss, ii) for _, ss, ii in pool[:10]]
+        m = await ctx.bot.send_message(q.message.chat_id, f"🔁 <b>{make_bold_unicode('مواد مشابهة')}</b>\n{LINE}",
+                                       parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
+        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off), [f"{i['title']}" for _, i in pairs]); return
+
+    if data.startswith("tagq:"):
+        tg = data.split(":", 1)[1]
+        pairs = [(s2, it2) for s2, it2 in all_items() if tg in (it2.get("tags") or []) and not it2.get("hidden")][:20]
+        msg2 = await safe_edit(q, f"🏷 <b>{html.escape(tg)}</b>\n{LINE}", reply_markup=results_kb(pairs, 0, back="tags:list"))
+        start_marquee(ctx, msg2, lambda off=0: results_kb(pairs, off, back="tags:list"),
+                      [f"{i['title']}" for _, i in pairs]); return
+
+    if data == "tags:list":
+        tags = all_tags()
+        rows = [[IB(make_bold_unicode(f"🏷 {t} ({n})"), callback_data=f"tagq:{t}", style="primary")] for t, n in list(tags.items())[:20]]
+        rows = rows or [[IB(make_bold_unicode("لا توجد وسوم بعد"), callback_data="noop")]]
+        await safe_edit(q, f"🏷 <b>{make_bold_unicode('الوسوم')}</b>\n{LINE}", reply_markup=InlineKeyboardMarkup(rows)); return
+
+    if data.startswith("advt:"):
+        t = data.split(":")[1]
+        ctx.user_data["adv_type"] = None if t == "all" else t
+        ctx.user_data["search"] = True
+        await safe_edit(q, f"🔍 أرسل كلمة البحث ({'كل الأنواع' if t == 'all' else TYPE_EMOJI.get(t,'') + ' ' + t}):"); return
+
+    # ── من هنا فصاعداً أوامر الأدمن ──
+    if not is_admin(uid):
+        await q.answer("🚫 غير مصرح", show_alert=True); return
+
+    if data.startswith("pin:"):
+        _, sid, iid = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        if it:
+            it["pin"] = not it.get("pin"); save_data()
+            await q.answer("📌 تم التثبيت" if it["pin"] else "تم إلغاء التثبيت", show_alert=True)
+        return
+
+    if data.startswith("padd:"):
+        _, sid, iid = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        if not it:
+            await q.answer("⚠️ القائمة غير موجودة", show_alert=True); return
+        ctx.user_data["await"] = ("packfiles", (sid, iid))
+        await safe_edit(q,
+            f"📤 أرسل الآن ملفات القائمة <b>{html.escape(it['title'])}</b> واحداً بعد الآخر\n{LINE}\n"
+            "🔸 يمكنك كتابة اسم الملف في التعليق (مثل: جودة عالية 1080p)\n"
+            "🔸 وإن لم تكتب شيئاً سأسميه تلقائياً (النسخة 1، النسخة 2 …)\n"
+            "🔸 عند الانتهاء أرسل /done")
+        return
+
+    if data.startswith("pmng:"):
+        _, sid, iid = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        if not it:
+            await q.answer("⚠️ القائمة غير موجودة", show_alert=True); return
+        await safe_edit(q, f"🧹 إدارة ملفات: <b>{html.escape(it['title'])}</b>\n{LINE}",
+                        reply_markup=pack_files_admin_kb(sec, it)); return
+
+    if data.startswith("pmv:"):
+        _, sid, iid, idx, d = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        i = int(idx)
+        if it:
+            fs = it.get("files", [])
+            j = i - 1 if d == "up" else i + 1
+            if 0 <= j < len(fs):
+                fs[i], fs[j] = fs[j], fs[i]; save_data()
         try:
-            await status.edit_text(
-                f"اكتملت المعالجة. الصفحات: {result.page_count}، الصور المضمنة: {result.embedded_count}."
-            )
+            await q.edit_message_reply_markup(reply_markup=pack_files_admin_kb(sec, it))
         except Exception:
             pass
+        return
 
-        mode = settings["mode"]
-        if mode in {"both", "images"}:
-            all_images = result.page_images + result.embedded_images
-            if len(all_images) > MAX_SEND_IMAGES:
-                await update.effective_message.reply_text(
-                    f"عدد الصور {len(all_images)}، وسيتم إرسال أول {MAX_SEND_IMAGES}. "
-                    "يمكن رفع MAX_SEND_IMAGES في إعدادات الاستضافة لإرسال عدد أكبر."
-                )
-            for index, image_path in enumerate(all_images[:MAX_SEND_IMAGES], start=1):
-                caption = f"الصورة {index} من {min(len(all_images), MAX_SEND_IMAGES)}"
-                await send_media(update, image_path, caption)
+    if data.startswith("pcov:"):
+        _, sid, iid = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        if not it:
+            await q.answer("⚠️ القائمة غير موجودة", show_alert=True); return
+        ctx.user_data["await"] = ("packcover", (sid, iid))
+        await safe_edit(q, f"🖼 أرسل الآن صورة الغلاف للقائمة <b>{html.escape(it['title'])}</b>\n{LINE}\n"
+                           "🔸 أرسل /skip لحذف الغلاف الحالي أو تجاوز الخطوة")
+        return
 
-        if mode in {"both", "text"}:
-            await reply_chunks(update, "النص المستخرج:\n\n" + result.text)
-            with text_path.open("rb") as handle:
-                await update.effective_message.reply_document(document=handle, caption="ملف النص المستخرج")
+    if data.startswith("pren:"):
+        _, sid, iid, idx = data.split(":")
+        ctx.user_data["await"] = ("packren", (sid, iid, int(idx)))
+        await safe_edit(q, "✏️ أرسل الاسم الجديد لهذا الملف:"); return
 
-        await update.effective_message.reply_text(
-            "لترجمة النص المحفوظ بالقاموس استخدم: /translate last\n"
-            "ولتغيير ما يرسل البوت استخدم: /mode both أو /mode images أو /mode text"
-        )
-    except Exception as exc:
-        LOGGER.exception("File processing failed for %s", input_path)
+    if data.startswith("pdel:"):
+        _, sid, iid, idx = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        if it and 0 <= int(idx) < len(it.get("files", [])):
+            it["files"].pop(int(idx)); save_data()
+        await q.answer("🗑 تم حذف الملف", show_alert=True)
         try:
-            await status.edit_text(f"حدث خطأ أثناء المعالجة: {exc}")
-        except Exception:
-            await update.effective_message.reply_text(f"حدث خطأ أثناء المعالجة: {exc}")
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
-
-
-async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    document = update.effective_message.document
-    caption = (update.effective_message.caption or "").strip()
-    if is_admin(update) and caption.lower().startswith("/importdict"):
-        await import_dictionary_document(update, context)
-        return
-    file_name = document.file_name or "uploaded_file"
-    suffix = Path(file_name).suffix.lower()
-    mime = (document.mime_type or "").lower()
-    is_pdf = suffix == ".pdf" or mime == "application/pdf"
-    is_image = suffix in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"} or mime.startswith("image/")
-    if not (is_pdf or is_image):
-        await update.effective_message.reply_text("أرسل PDF أو صورة بصيغة JPG/PNG/WEBP/TIFF.")
-        return
-    if document.file_size and document.file_size > MAX_FILE_MB * 1024 * 1024:
-        await update.effective_message.reply_text(f"الحد الأقصى للملف هو {MAX_FILE_MB} MB.")
-        return
-    temporary = Path(tempfile.mkdtemp(prefix="download_"))
-    try:
-        input_path = temporary / safe_filename(file_name)
-        tg_file = await context.bot.get_file(document.file_id)
-        await tg_file.download_to_drive(custom_path=str(input_path))
-        await process_and_reply(update, context, input_path, is_pdf)
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
-
-
-async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    photo = update.effective_message.photo[-1]
-    temporary = Path(tempfile.mkdtemp(prefix="photo_"))
-    try:
-        input_path = temporary / "telegram_photo.jpg"
-        tg_file = await context.bot.get_file(photo.file_id)
-        await tg_file.download_to_drive(custom_path=str(input_path))
-        await process_and_reply(update, context, input_path, False)
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
-
-
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not ensure_user(update):
-        return
-    await update.effective_message.reply_text(
-        "أرسل صورة أو ملف PDF للمعالجة، أو استخدم /translate لترجمة نص بالقاموس. اكتب /help للمساعدة."
-    )
-
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    LOGGER.exception("Unhandled Telegram error", exc_info=context.error)
-    if isinstance(update, Update) and update.effective_message:
-        try:
-            await update.effective_message.reply_text("حدث خطأ غير متوقع. حاول مرة أخرى لاحقاً.")
+            await q.edit_message_reply_markup(reply_markup=pack_files_admin_kb(sec, it))
         except Exception:
             pass
+        return
 
+    if data == "adm:pack":
+        await safe_edit(q, "🗂 اختر القسم الذي ستوضع فيه القائمة:", reply_markup=pick_section_kb("pack")); return
 
-async def post_init(application: Application) -> None:
-    await application.bot.set_my_commands(
-        [
-            BotCommand("start", "بدء الاستخدام"),
-            BotCommand("help", "عرض المساعدة"),
-            BotCommand("translate", "ترجمة بالنص أو آخر نتيجة"),
-            BotCommand("settings", "إعداداتك"),
-            BotCommand("summary", "ملخص آخر نص"),
-            BotCommand("last", "آخر نتيجة"),
-            BotCommand("privacy", "الخصوصية"),
-        ]
-    )
+    if data == "adm:panel":
+        await safe_edit(q, f"🛠 <b>{make_bold_unicode('لوحة الأدمن')}</b>\n{LINE}",
+                        reply_markup=admin_kb()); return
 
+    if data == "adm:upload":
+        await safe_edit(q, "📤 اختر القسم الذي تريد الرفع إليه:", reply_markup=pick_section_kb("upload")); return
 
-def build_application() -> Application:
-    if not BOT_TOKEN.strip():
-        raise RuntimeError("BOT_TOKEN فارغ. افتح الملف وعدّل قيمة BOT_TOKEN في قسم الإعدادات.")
-    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("id", id_command))
-    application.add_handler(CommandHandler("settings", settings_command))
-    application.add_handler(CommandHandler("setlang", setlang_command))
-    application.add_handler(CommandHandler("settarget", settarget_command))
-    application.add_handler(CommandHandler("mode", mode_command))
-    application.add_handler(CommandHandler(["translate", "tr"], translate_command))
-    application.add_handler(CommandHandler("teach", teach_command))
-    application.add_handler(CommandHandler("delword", delword_command))
-    application.add_handler(CommandHandler("dictstats", dictstats_command))
-    application.add_handler(CommandHandler("importdict", importdict_help))
-    application.add_handler(CommandHandler("exportdict", exportdict_command))
-    application.add_handler(CommandHandler("summary", summary_command))
-    application.add_handler(CommandHandler("search", search_command))
-    application.add_handler(CommandHandler("last", last_command))
-    application.add_handler(CommandHandler("clear", clear_command))
-    application.add_handler(CommandHandler("feedback", feedback_command))
-    application.add_handler(CommandHandler("privacy", privacy_command))
-    application.add_handler(CommandHandler("stats", admin_stats_command))
-    application.add_handler(CommandHandler("ban", ban_command))
-    application.add_handler(CommandHandler("unban", unban_command))
-    application.add_handler(CommandHandler("broadcast", broadcast_command))
-    application.add_handler(MessageHandler(filters.Document.ALL, document_handler))
-    application.add_handler(MessageHandler(filters.PHOTO, photo_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-    application.add_error_handler(error_handler)
-    return application
+    if data == "adm:rensec":
+        await safe_edit(q, "✏️ اختر القسم لتغيير اسمه:", reply_markup=pick_section_kb("rensec")); return
+
+    if data == "adm:delsec":
+        await safe_edit(q, "🗑 اختر القسم لحذفه (سيُحذف محتواه):", reply_markup=pick_section_kb("delsec")); return
+
+    if data == "adm:manage":
+        await safe_edit(q, "🧹 اختر القسم لإدارة محتواه:", reply_markup=pick_section_kb("manage")); return
+
+    if data == "adm:order":
+        await safe_edit(q, "↕️ رتّب الأقسام:", reply_markup=order_kb()); return
+
+    if data == "adm:labels":
+        await safe_edit(q, "🏷 اضغط على الزر الذي تريد تغيير اسمه:", reply_markup=labels_kb()); return
+
+    if data == "adm:addsec":
+        ctx.user_data["await"] = ("addsec", None)
+        await safe_edit(q, "➕ أرسل اسم القسم الجديد (يمكنك وضع إيموجي في البداية):"); return
+
+    if data == "adm:backup":
+        await do_backup(ctx.bot, chat_id=q.message.chat_id, force=True)
+        if BACKUP_CHAT_ID:
+            await do_backup(ctx.bot, force=True)
+        await q.answer("💾 تم إرسال النسخة", show_alert=True); return
+
+    if data == "adm:restore":
+        ctx.user_data["await"] = ("restore", None)
+        await safe_edit(q, f"♻️ أرسل ملف <b>archive.json</b> (أو users.json) لاستعادته.\n{LINE}\n"
+                           "يمكنك إعادة توجيهه من قناة النسخ الاحتياطي."); return
+
+    if data == "adm:addadmin":
+        ctx.user_data["await"] = ("addadmin", None)
+        await safe_edit(q, "👑 أرسل ايدي المستخدم لإضافته/إزالته كأدمن:"); return
+
+    if data == "adm:forcesub":
+        ctx.user_data["await"] = ("forcesub", None)
+        await safe_edit(q, f"📢 أرسل معرّف القناة للاشتراك الإجباري (مثال: @mychannel)\n{LINE}\n"
+                           f"الحالي: <b>{S('force_sub') or '—'}</b>\nأرسل /off للتعطيل"); return
+
+    if data.startswith("adm:tg:"):
+        key = data.split(":")[2]
+        DATA["settings"][key] = not DATA["settings"].get(key)
+        save_data()
+        await q.edit_message_reply_markup(reply_markup=admin_kb()); return
+
+    if data == "adm:logs":
+        logs = DATA.get("logs", [])[-25:]
+        txt = "\n".join(f"• {time.strftime('%m-%d %H:%M', time.localtime(l['t']))} — {html.escape(l['x'])}"
+                        for l in reversed(logs)) or "—"
+        await safe_edit(q, f"🗒 <b>{make_bold_unicode('سجل النشاط')}</b>\n{LINE}\n{txt}\n{LINE}",
+                        reply_markup=admin_kb()); return
+
+    if data.startswith("adm:txt:"):
+        key = data.split(":")[2]
+        ctx.user_data["await"] = ("txt", key)
+        cur = DATA.get(key, "")
+        await safe_edit(q, f"📝 أرسل النص الجديد.\n{LINE}\nالحالي:\n<code>{html.escape(str(cur))}</code>"); return
+
+    if data == "adm:bc":
+        ctx.user_data["await"] = ("bc", None)
+        await safe_edit(q, "📣 أرسل الرسالة (نص أو وسائط) وسأبثّها لكل المستخدمين:"); return
+
+    if data == "adm:ban":
+        ctx.user_data["await"] = ("ban", None)
+        await safe_edit(q, "🚫 أرسل ايدي المستخدم لحظره أو فك حظره:"); return
+
+    if data == "adm:marq":
+        order = ["scroll", "wrap", "off"]
+        cur = S("marquee", "scroll")
+        DATA["settings"]["marquee"] = order[(order.index(cur) + 1) % 3] if cur in order else "scroll"
+        save_data()
+        names = {"scroll": "🎞 شريط متحرك", "wrap": "📃 نص كامل بأسطر صغيرة", "off": "⏹ بلا حركة (اقتصار بنقاط)"}
+        await q.answer("تم: " + names[DATA["settings"]["marquee"]], show_alert=True)
+        await safe_edit(q, f"🛠 <b>{make_bold_unicode('لوحة الأدمن')}</b>\n{LINE}", reply_markup=admin_kb()); return
+
+    if data == "adm:limit":
+        ctx.user_data["await"] = ("limit", None)
+        await safe_edit(q, "🚦 أرسل عدد التنزيلات اليومية المسموحة لكل مستخدم (0 = بلا حد):"); return
+
+    if data == "adm:banner":
+        ctx.user_data["await"] = ("banner", None)
+        await safe_edit(q, "📌 أرسل نص شريط الإعلان الذي يظهر أعلى القوائم (أو /off لإلغائه):"); return
+
+    if data == "adm:bulk":
+        await safe_edit(q, "⚡ اختر القسم للرفع المجمّع السريع:", reply_markup=pick_section_kb("bulk")); return
+
+    if data == "adm:trash":
+        tr = DATA.get("trash", [])[-15:]
+        rows = [[IB(make_bold_unicode(f"♻️ {x['item'].get('title','')[:26]}"), callback_data=f"untrash:{x['item']['id']}", style="success")] for x in tr]
+        rows.append([IB(make_bold_unicode("🧨 تفريغ السلة نهائياً"), callback_data="trash:clear", style="danger")])
+        rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="primary")])
+        await safe_edit(q, f"♻️ <b>{make_bold_unicode('سلة المحذوفات')}</b>\n{LINE}\nالعدد: <b>{len(DATA.get('trash', []))}</b>",
+                        reply_markup=InlineKeyboardMarkup(rows)); return
+
+    if data.startswith("untrash:"):
+        iid = data.split(":")[1]
+        tr = DATA.get("trash", [])
+        rec = next((x for x in tr if x["item"]["id"] == iid), None)
+        if rec:
+            sec = get_section(rec.get("sid")) or (DATA["sections"][0] if DATA["sections"] else None)
+            if sec:
+                sec["items"].append(rec["item"])
+            tr.remove(rec); save_data()
+        await q.answer("♻️ تمت الاستعادة", show_alert=True)
+        await safe_edit(q, "♻️ تمت استعادة المادة.", reply_markup=admin_kb()); return
+
+    if data == "trash:clear":
+        DATA["trash"] = []; save_data()
+        await safe_edit(q, "🧨 تم تفريغ سلة المحذوفات.", reply_markup=admin_kb()); return
+
+    if data == "adm:leader":
+        top = sorted(USERS.values(), key=lambda u: -int(u.get("points", 0)))[:15]
+        lines = [f"🎖 <b>{make_bold_unicode('المتصدرون')}</b>\n{LINE}"]
+        for i, u in enumerate(top, 1):
+            lines.append(f"{i}. {html.escape(str(u.get('username') or u.get('name') or u['id']))} — <b>{u.get('points',0)}</b> نقطة (مستوى {level_of(int(u.get('points',0)))})")
+        await safe_edit(q, "\n".join(lines) + f"\n{LINE}", reply_markup=admin_kb()); return
+
+    if data.startswith("tag:"):
+        _, sid, iid = data.split(":")
+        ctx.user_data["await"] = ("tags", (sid, iid))
+        await safe_edit(q, "🏷 أرسل الوسوم مفصولة بفاصلة (مثال: إصدار, جهاد, 1446) أو /off لحذفها:"); return
+
+    if data.startswith("hid:"):
+        _, sid, iid = data.split(":")
+        sec = get_section(sid); it = get_item(sec, iid) if sec else None
+        if it:
+            it["hidden"] = not it.get("hidden"); save_data()
+            await q.answer("🙈 أُخفيت المادة" if it["hidden"] else "👁 أصبحت ظاهرة", show_alert=True)
+        try:
+            await q.edit_message_reply_markup(reply_markup=manage_items_kb(sec))
+        except Exception:
+            pass
+        return
+
+    if data.startswith("sch:"):
+        _, sid, iid = data.split(":")
+        ctx.user_data["await"] = ("sched", (sid, iid))
+        await safe_edit(q, "⏰ أرسل وقت النشر بعد كم ساعة (مثال: 5) أو /off للنشر فوراً:"); return
+
+    if data.startswith("cpitem:"):
+        _, sid, iid = data.split(":")
+        ctx.user_data["copying"] = (sid, iid)
+        await safe_edit(q, "📑 اختر القسم الذي تريد نسخ المادة إليه:", reply_markup=pick_section_kb("copyto")); return
+
+    if data.startswith("mngexp:"):
+        sid = data.split(":")[1]
+        sec = get_section(sid)
+        if not sec:
+            return
+        body = [f"# {sec['title']}", LINE]
+        for i, it in enumerate(sorted_items(sec), 1):
+            body.append(f"{i}. [{it['type']}] {it['title']} — 👁{it.get('views',0)} 📥{it.get('dl',0)}")
+        buf = io.BytesIO("\n".join(body).encode("utf-8"))
+        buf.name = f"{sid}_list.txt"
+        await ctx.bot.send_document(q.message.chat_id, document=buf, filename=buf.name,
+                                    caption=f"📄 قائمة {sec['title']}")
+        return
+
+    if data.startswith("secst:"):
+        sid = data.split(":")[1]
+        sec = get_section(sid)
+        if not sec:
+            return
+        items = sec["items"]
+        top = sorted(items, key=lambda i: -int(i.get("dl", 0)))[:10]
+        det = "\n".join(f"{n}. {html.escape(i['title'][:30])} — 📥{i.get('dl',0)} 👁{i.get('views',0)}" for n, i in enumerate(top, 1)) or "—"
+        await safe_edit(q, f"📊 <b>{html.escape(sec['title'])}</b>\n{LINE}\n"
+                           f"📦 المواد: <b>{len(items)}</b> • 🙈 مخفية: <b>{sum(1 for i in items if i.get('hidden'))}</b>\n"
+                           f"📥 تنزيلات: <b>{sum(int(i.get('dl',0)) for i in items)}</b>\n{LINE}\n{det}",
+                        reply_markup=admin_kb()); return
+
+    if data.startswith("secpw:"):
+        sid = data.split(":")[1]
+        ctx.user_data["await"] = ("secpw", sid)
+        await safe_edit(q, "🔐 أرسل كلمة المرور لهذا القسم (أو /off لإزالة القفل):"); return
+
+    if data.startswith("sechid:"):
+        sid = data.split(":")[1]
+        sec = get_section(sid)
+        if sec:
+            sec["hidden"] = not sec.get("hidden"); save_data()
+            await q.answer("🙈 أُخفي القسم" if sec["hidden"] else "👁 أصبح ظاهراً", show_alert=True)
+        await safe_edit(q, f"🧹 إدارة: {sec['title']}\n{LINE}", reply_markup=manage_items_kb(sec, 0)); return
+
+    if data == "adm:users":
+        lines = [f"👥 <b>{make_bold_unicode('المستخدمون')}</b>\n{LINE}"]
+        for u in list(USERS.values())[-30:]:
+            mark = "🚫" if u.get("banned") else "✅"
+            lines.append(f"{mark} <code>{u['id']}</code> — {html.escape(str(u.get('username') or u.get('name') or '—'))}")
+        lines.append(LINE)
+        await safe_edit(q, "\n".join(lines), reply_markup=admin_kb()); return
+
+    if data == "adm:stats":
+        total = sum(len(s["items"]) for s in DATA["sections"])
+        by = {}
+        views = 0
+        for s in DATA["sections"]:
+            for it in s["items"]:
+                by[it["type"]] = by.get(it["type"], 0) + 1
+                views += int(it.get("views", 0))
+        det = "\n".join(f"{TYPE_EMOJI.get(k,'📎')} {k}: <b>{v}</b>" for k, v in by.items()) or "—"
+        day = int(time.time()) - 86400
+        active = sum(1 for u in USERS.values() if u.get("last", 0) > day)
+        txt = (f"📊 <b>{make_bold_unicode('إحصائيات الأرشيف')}</b>\n{LINE}\n"
+               f"👥 المستخدمون: <b>{len(USERS)}</b> • نشط اليوم: <b>{active}</b>\n"
+               f"🗂 الأقسام: <b>{len(DATA['sections'])}</b>\n"
+               f"📦 إجمالي المواد: <b>{total}</b> • 👁 المشاهدات: <b>{views}</b>\n{LINE}\n{det}\n{LINE}")
+        await safe_edit(q, txt, reply_markup=admin_kb()); return
+
+    if data.startswith("adm:delitem:"):
+        _, _, sid, iid = data.split(":")
+        sec = get_section(sid)
+        if sec:
+            gone = get_item(sec, iid)
+            if gone:
+                DATA.setdefault("trash", []).append({"sid": sid, "t": int(time.time()), "item": gone})
+                DATA["trash"] = DATA["trash"][-50:]
+            sec["items"] = [i for i in sec["items"] if i["id"] != iid]
+            save_data(); add_log(f"حذف مادة {iid} من {sec['title']} (إلى سلة المحذوفات)")
+        await q.answer("🗑 تم الحذف", show_alert=True)
+        try:
+            await q.edit_message_reply_markup(reply_markup=manage_items_kb(sec))
+        except Exception:
+            pass
+        return
+
+    if data.startswith("mng:"):
+        _, sid, page = data.split(":")
+        sec = get_section(sid)
+        await safe_edit(q, f"🧹 إدارة: {sec['title']}\n{LINE}", reply_markup=manage_items_kb(sec, int(page))); return
+
+    if data.startswith("ren:"):
+        _, sid, iid = data.split(":")
+        ctx.user_data["await"] = ("renitem", (sid, iid))
+        await safe_edit(q, "✏️ أرسل العنوان الجديد لهذه المادة:"); return
+
+    if data.startswith("mvitem:"):
+        _, sid, iid = data.split(":")
+        ctx.user_data["moving"] = (sid, iid)
+        await safe_edit(q, "↔️ اختر القسم الذي تريد نقل المادة إليه:", reply_markup=pick_section_kb("moveto")); return
+
+    if data.startswith("mv:"):
+        _, direction, sid = data.split(":")
+        idx = next((i for i, s in enumerate(DATA["sections"]) if s["id"] == sid), None)
+        if idx is not None:
+            new = idx - 1 if direction == "up" else idx + 1
+            if 0 <= new < len(DATA["sections"]):
+                DATA["sections"][idx], DATA["sections"][new] = DATA["sections"][new], DATA["sections"][idx]
+                save_data()
+        await q.edit_message_reply_markup(reply_markup=order_kb()); return
+
+    if data.startswith("lbl:"):
+        key = data.split(":")[1]
+        ctx.user_data["await"] = ("label", key)
+        await safe_edit(q, f"🏷 أرسل الاسم الجديد للزر <code>{key}</code>\nالحالي: <b>{html.escape(L(key))}</b>"); return
+
+    if data.startswith("pick:"):
+        _, action, sid = data.split(":")
+        sec = get_section(sid)
+        if not sec:
+            await safe_edit(q, "⚠️ القسم غير موجود."); return
+
+        if action == "upload":
+            ctx.user_data["await"] = ("upload", sid)
+            await safe_edit(q,
+                f"📤 أرسل الآن المحتوى إلى قسم <b>{html.escape(sec['title'])}</b>\n{LINE}\n"
+                "🎬 فيديو • 🎧 صوت • 🖼 صورة • 📄 ملف • 🎙 بصمة • 🎞 GIF • 📝 نص\n"
+                "يمكنك إرسال عدة عناصر متتالية، وعند الانتهاء أرسل /done")
+        elif action == "pack":
+            ctx.user_data["await"] = ("packname", sid)
+            await safe_edit(q,
+                f"🗂 أرسل اسم القائمة التي ستظهر في قسم <b>{html.escape(sec['title'])}</b>\n{LINE}\n"
+                "مثال: إصدار «الفتح المبين» — عدة جودات")
+        elif action == "bulk":
+            ctx.user_data["await"] = ("bulk", sid)
+            ctx.user_data["bulkn"] = 0
+            await safe_edit(q,
+                f"⚡ الرفع المجمّع إلى <b>{html.escape(sec['title'])}</b>\n{LINE}\n"
+                "أرسل الملفات تتابعاً بسرعة — تُسمّى تلقائياً إن لم تكتب تعليقاً.\nوعند الانتهاء /done")
+        elif action == "copyto":
+            src = ctx.user_data.pop("copying", None)
+            if src:
+                osid, iid = src
+                osec = get_section(osid); it = get_item(osec, iid) if osec else None
+                if it:
+                    cp = json.loads(json.dumps(it)); cp["id"] = next_id("i"); cp["ts"] = int(time.time())
+                    sec["items"].append(cp); save_data(); add_log(f"نسخ مادة إلى {sec['title']}")
+            await safe_edit(q, "✅ تم نسخ المادة.", reply_markup=admin_kb())
+        elif action == "rensec":
+            ctx.user_data["await"] = ("rensec", sid)
+            await safe_edit(q, f"✏️ أرسل الاسم الجديد للقسم <b>{html.escape(sec['title'])}</b>")
+        elif action == "delsec":
+            DATA["sections"] = [s for s in DATA["sections"] if s["id"] != sid]
+            save_data(); add_log("حذف قسم")
+            await safe_edit(q, f"🗑 تم حذف القسم.\n{LINE}", reply_markup=admin_kb())
+        elif action == "manage":
+            await safe_edit(q, f"🧹 إدارة: {sec['title']}\n{LINE}", reply_markup=manage_items_kb(sec, 0))
+        elif action == "moveto":
+            src = ctx.user_data.pop("moving", None)
+            if src:
+                osid, iid = src
+                osec = get_section(osid); it = get_item(osec, iid) if osec else None
+                if it:
+                    osec["items"] = [i for i in osec["items"] if i["id"] != iid]
+                    sec["items"].append(it); save_data()
+                    add_log(f"نقل مادة إلى {sec['title']}")
+            await safe_edit(q, "✅ تم نقل المادة.", reply_markup=admin_kb())
+        return
+
+# ══════════════════ MESSAGES ══════════════════
+async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if not msg:
+        return
+    u = note_user(update.effective_user)
+    if u.get("banned"):
+        return
+    uid = update.effective_user.id
+    text = (msg.text or "").strip()
+    if S("maintenance") and not is_admin(uid):
+        await msg.reply_text("🔧 البوت في وضع الصيانة مؤقتاً."); return
+
+    # ── حالات انتظار الأدمن ──
+    waiting = ctx.user_data.get("await")
+    if waiting and is_admin(uid):
+        kind, payload = waiting
+
+        if text == "/done":
+            ctx.user_data.pop("await", None)
+            if BACKUP_CHAT_ID:
+                await do_backup(ctx.bot, force=True)
+            await msg.reply_text(f"✅ تم الإنهاء (وتم حفظ نسخة احتياطية).\n{LINE}", reply_markup=admin_kb()); return
+
+        if kind == "limit":
+            try:
+                DATA["settings"]["daily_limit"] = max(0, int(text))
+            except ValueError:
+                await msg.reply_text("⚠️ أرسل رقماً."); return
+            save_data(); ctx.user_data.pop("await", None)
+            await msg.reply_text("✅ تم تحديث حد التنزيل اليومي.", reply_markup=admin_kb()); return
+
+        if kind == "banner":
+            DATA["settings"]["banner"] = "" if text == "/off" else text
+            save_data(); ctx.user_data.pop("await", None)
+            await msg.reply_text("✅ تم تحديث شريط الإعلان.", reply_markup=admin_kb()); return
+
+        if kind == "tags":
+            sid, iid = payload
+            sec = get_section(sid); it = get_item(sec, iid) if sec else None
+            if it:
+                it["tags"] = [] if text == "/off" else [t.strip() for t in text.replace("،", ",").split(",") if t.strip()][:8]
+                save_data()
+            ctx.user_data.pop("await", None)
+            await msg.reply_text("🏷 تم تحديث الوسوم.", reply_markup=admin_kb()); return
+
+        if kind == "sched":
+            sid, iid = payload
+            sec = get_section(sid); it = get_item(sec, iid) if sec else None
+            if it:
+                if text == "/off":
+                    it["publish_at"] = 0
+                else:
+                    try:
+                        it["publish_at"] = int(time.time()) + int(float(text) * 3600)
+                    except ValueError:
+                        await msg.reply_text("⚠️ أرسل عدد الساعات (مثال: 3)."); return
+                save_data()
+            ctx.user_data.pop("await", None)
+            await msg.reply_text("⏰ تم ضبط وقت النشر.", reply_markup=admin_kb()); return
+
+        if kind == "secpw":
+            sec = get_section(payload)
+            if sec:
+                sec["pw"] = "" if text == "/off" else text.strip()
+                save_data()
+            ctx.user_data.pop("await", None)
+            await msg.reply_text("🔐 تم تحديث قفل القسم.", reply_markup=admin_kb()); return
+
+        if kind == "bulk":
+            sec = get_section(payload)
+            if not sec:
+                ctx.user_data.pop("await", None)
+                await msg.reply_text("⚠️ القسم غير موجود."); return
+            t, fid, cap = detect_media(msg)
+            if not t:
+                await msg.reply_text("⚠️ نوع غير مدعوم."); return
+            ctx.user_data["bulkn"] = int(ctx.user_data.get("bulkn", 0)) + 1
+            title = ((cap or "").split("\n")[0][:120] or f"{sec['title']} — {ctx.user_data['bulkn']}")
+            it = {"id": next_id("i"), "type": t, "file_id": fid, "title": title,
+                  "caption": cap if t != "text" else "", "ts": int(time.time()),
+                  "views": 0, "dl": 0, "pin": False, "tags": [], "hidden": False, "publish_at": 0}
+            sec["items"].append(it); save_data()
+            await notify_new(ctx.bot, sec, it)
+            await msg.reply_text(make_bold_unicode(f"⚡ {ctx.user_data['bulkn']} — {title}"))
+            return
+
+        if kind == "restore":
+            doc = msg.document
+            if not doc:
+                await msg.reply_text("⚠️ أرسل ملف JSON."); return
+            try:
+                f = await doc.get_file()
+                raw = await f.download_as_bytearray()
+                payload_obj = json.loads(bytes(raw).decode("utf-8"))
+            except Exception as e:
+                await msg.reply_text(f"⚠️ ملف غير صالح: {e}"); return
+            if isinstance(payload_obj, dict) and "sections" in payload_obj:
+                apply_restore(payload_obj, "data")
+                await msg.reply_text("♻️ تمت استعادة الأرشيف بنجاح ✅", reply_markup=admin_kb())
+            elif isinstance(payload_obj, dict):
+                apply_restore(payload_obj, "users")
+                await msg.reply_text("♻️ تمت استعادة المستخدمين ✅", reply_markup=admin_kb())
+            else:
+                await msg.reply_text("⚠️ صيغة غير معروفة.")
+            ctx.user_data.pop("await", None)
+            add_log("استعادة نسخة احتياطية")
+            return
+
+        if kind == "upload":
+            sec = get_section(payload)
+            if not sec:
+                ctx.user_data.pop("await", None)
+                await msg.reply_text("⚠️ القسم غير موجود."); return
+            t, fid, cap = detect_media(msg)
+            if not t:
+                await msg.reply_text("⚠️ نوع غير مدعوم."); return
+            title = (cap or "بدون عنوان").split("\n")[0][:120]
+            sec["items"].append({
+                "id": next_id("i"), "type": t, "file_id": fid,
+                "title": title, "caption": cap if t != "text" else "",
+                "ts": int(time.time()), "views": 0, "pin": False,
+            })
+            save_data(); add_log(f"رفع مادة إلى {sec['title']}")
+            await notify_new(ctx.bot, sec, sec["items"][-1])
+            await msg.reply_text(
+                make_bold_unicode(f"✅ أُضيفت المادة إلى {sec['title']} ({len(sec['items'])})") +
+                "\nأرسل التالي أو /done للإنهاء")
+            return
+
+        if kind == "packname":
+            sec = get_section(payload)
+            if not sec:
+                ctx.user_data.pop("await", None)
+                await msg.reply_text("⚠️ القسم غير موجود."); return
+            iid = next_id("i")
+            sec["items"].append({
+                "id": iid, "type": "pack", "file_id": None, "cover": None,
+                "title": (text or "قائمة جديدة")[:120], "caption": "",
+                "files": [], "ts": int(time.time()), "views": 0, "pin": False,
+            })
+            save_data()
+            ctx.user_data["await"] = ("packcover", (payload, iid))
+            await msg.reply_text(
+                f"✅ تم إنشاء القائمة: <b>{html.escape(text)}</b>\n{LINE}\n"
+                "🖼 أرسل الآن <b>صورة الغلاف</b> التي ستظهر مع الاسم قبل الجودات\n"
+                "🔸 أو أرسل /skip للتجاوز بدون غلاف",
+                parse_mode=ParseMode.HTML)
+            return
+
+        if kind == "packcover":
+            sid, iid = payload
+            sec = get_section(sid); it = get_item(sec, iid) if sec else None
+            if not it:
+                ctx.user_data.pop("await", None)
+                await msg.reply_text("⚠️ القائمة غير موجودة."); return
+            if text == "/skip":
+                it["cover"] = None; save_data()
+            elif msg.photo:
+                it["cover"] = msg.photo[-1].file_id; save_data()
+            elif msg.video and msg.video.thumbnail:
+                it["cover"] = msg.video.thumbnail.file_id; save_data()
+            else:
+                await msg.reply_text("⚠️ أرسل صورة للغلاف أو /skip للتجاوز."); return
+            ctx.user_data["await"] = ("packfiles", (sid, iid))
+            await msg.reply_text(
+                f"{'✅ تم حفظ الغلاف' if it.get('cover') else '⏭ بدون غلاف'}\n{LINE}\n"
+                "📤 أرسل الآن ملفات القائمة واحداً بعد الآخر (فيديو بجودات مختلفة مثلاً)\n"
+                "🔸 اكتب اسم/الجودة في التعليق (مثل: جودة 1080p) أو اتركه فأسميه تلقائياً\n"
+                "🔸 عند الانتهاء أرسل /done",
+                parse_mode=ParseMode.HTML)
+            return
+
+        if kind == "packfiles":
+            sid, iid = payload
+            sec = get_section(sid); it = get_item(sec, iid) if sec else None
+            if not it:
+                ctx.user_data.pop("await", None)
+                await msg.reply_text("⚠️ القائمة غير موجودة."); return
+            t, fid, cap = detect_media(msg)
+            if not t or t == "text":
+                await msg.reply_text("⚠️ أرسل ملفاً (فيديو/صوت/صورة/ملف)."); return
+            it.setdefault("files", [])
+            label = (msg.caption or "").split("\n")[0].strip()[:80] or f"النسخة {len(it['files']) + 1}"
+            it["files"].append({"type": t, "file_id": fid, "label": label, "ts": int(time.time())})
+            save_data()
+            await msg.reply_text(
+                make_bold_unicode(f"✅ أُضيف «{label}» إلى القائمة {it['title']} ({len(it['files'])})") +
+                "\nأرسل الملف التالي أو /done للإنهاء")
+            return
+
+        if kind == "packren":
+            sid, iid, idx = payload
+            sec = get_section(sid); it = get_item(sec, iid) if sec else None
+            if it and 0 <= idx < len(it.get("files", [])):
+                it["files"][idx]["label"] = (text or it["files"][idx]["label"])[:80]
+                save_data()
+            ctx.user_data.pop("await", None)
+            await msg.reply_text("✅ تم تعديل اسم الملف.", reply_markup=admin_kb()); return
+
+        if kind == "addsec":
+            DATA["sections"].append({"id": next_id("s"), "title": text or "قسم جديد", "desc": "", "items": []})
+            save_data(); ctx.user_data.pop("await", None); add_log("إضافة قسم")
+            await msg.reply_text(f"✅ تمت إضافة القسم: <b>{html.escape(text)}</b>",
+                                 parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
+
+        if kind == "rensec":
+            sec = get_section(payload)
+            if sec:
+                sec["title"] = text or sec["title"]; save_data()
+            ctx.user_data.pop("await", None)
+            await msg.reply_text(f"✅ تم تغيير الاسم إلى: <b>{html.escape(text)}</b>",
+                                 parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
+
+        if kind == "renitem":
+            sid, iid = payload
+            sec = get_section(sid); it = get_item(sec, iid) if sec else None
+            if it:
+                it["title"] = text[:120]; save_data()
+            ctx.user_data.pop("await", None)
+            await msg.reply_text("✅ تم تعديل العنوان.", reply_markup=admin_kb()); return
+
+        if kind == "txt":
+            DATA[payload] = text; save_data(); ctx.user_data.pop("await", None)
+            await msg.reply_text("✅ تم تحديث النص.", reply_markup=admin_kb()); return
+
+        if kind == "label":
+            DATA["labels"][payload] = text; save_data(); ctx.user_data.pop("await", None)
+            await msg.reply_text("✅ تم تحديث اسم الزر.", reply_markup=main_kb(uid)); return
+
+        if kind == "forcesub":
+            DATA["settings"]["force_sub"] = "" if text == "/off" else text.strip()
+            save_data(); ctx.user_data.pop("await", None)
+            await msg.reply_text("✅ تم تحديث الاشتراك الإجباري.", reply_markup=admin_kb()); return
+
+        if kind == "addadmin":
+            try:
+                tid = int(text.strip())
+            except ValueError:
+                await msg.reply_text("⚠️ أرسل رقم ايدي صحيح."); return
+            adm = DATA.setdefault("admins", [])
+            if tid in adm:
+                adm.remove(tid); out = "تمت إزالة الأدمن"
+            else:
+                adm.append(tid); out = "تمت إضافة الأدمن"
+            save_data(); ctx.user_data.pop("await", None)
+            await msg.reply_text(f"👑 {out}: <code>{tid}</code>", parse_mode=ParseMode.HTML,
+                                 reply_markup=admin_kb()); return
+
+        if kind == "ban":
+            tid = text.strip()
+            tu = USERS.get(tid)
+            if not tu:
+                await msg.reply_text("⚠️ لم أجد هذا المستخدم."); return
+            tu["banned"] = not tu.get("banned"); save_users(); ctx.user_data.pop("await", None)
+            await msg.reply_text(f"{'🚫 تم الحظر' if tu['banned'] else '✅ تم فك الحظر'} — <code>{tid}</code>",
+                                 parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
+
+        if kind == "bc":
+            ctx.user_data.pop("await", None)
+            ok = fail = 0
+            for key in list(USERS.keys()):
+                if USERS[key].get("banned"):
+                    continue
+                try:
+                    await ctx.bot.copy_message(int(key), msg.chat_id, msg.message_id)
+                    ok += 1
+                except Exception:
+                    fail += 1
+            add_log(f"بث رسالة ({ok} نجاح / {fail} فشل)")
+            await msg.reply_text(f"📣 تم البث\n{LINE}\n✅ {ok} • ❌ {fail}", reply_markup=admin_kb()); return
+
+    # ── فتح قسم مقفل ──
+    if ctx.user_data.get("unlock"):
+        sid = ctx.user_data["unlock"]
+        sec = get_section(sid)
+        if sec and text and text.strip() == (sec.get("pw") or ""):
+            ctx.user_data.pop("unlock", None)
+            ok = ctx.user_data.setdefault("unlocked", [])
+            if sid not in ok:
+                ok.append(sid)
+            head = f"{sec['title']}\n{LINE}\n🔓 تم الفتح، بارك الله فيك.\n{LINE}"
+            m = await msg.reply_text(head, parse_mode=ParseMode.HTML, reply_markup=items_kb(sec, 0, 0))
+            start_marquee(ctx, m, lambda off=0: items_kb(sec, 0, off), items_texts(sec, 0))
+        else:
+            await msg.reply_text("🔐 كلمة المرور غير صحيحة، حاول مرة أخرى أو اضغط الأقسام.")
+        return
+
+    # ── مراسلة الإدارة ──
+    if ctx.user_data.pop("fb", None):
+        who = f"@{update.effective_user.username}" if update.effective_user.username else str(uid)
+        for a in set(list(ADMIN_IDS) + list(DATA.get("admins", []))):
+            try:
+                await ctx.bot.send_message(a, f"✉️ <b>رسالة من مستخدم</b>\n{LINE}\n👤 {html.escape(who)} — <code>{uid}</code>\n{LINE}\n{html.escape(text or '(وسائط)')}",
+                                           parse_mode=ParseMode.HTML)
+                if not text:
+                    await ctx.bot.copy_message(a, msg.chat_id, msg.message_id)
+            except Exception:
+                pass
+        award(uid, 1)
+        await msg.reply_text("✅ وصلت رسالتك للإدارة، جزاك الله خيراً."); return
+
+    # ── اشتراك إجباري للمستخدم العادي ──
+    if not is_admin(uid) and not await sub_ok(ctx.bot, uid):
+        await msg.reply_text("📢 يرجى الاشتراك في القناة أولاً:", reply_markup=sub_kb()); return
+
+    # ── بحث ──
+    if ctx.user_data.get("search"):
+        scope = ctx.user_data.pop("search")
+        pool = all_items() if scope is True else [(get_section(scope), it) for it in (get_section(scope) or {"items": []})["items"]]
+        ftype = ctx.user_data.pop("adv_type", None)
+        res = [(s, it) for s, it in pool
+               if s and text and text.lower() in (it["title"] + " " + (it.get("caption") or "") + " " + " ".join(it.get("tags") or [])).lower()
+               and not it.get("hidden") and (not ftype or it.get("type") == ftype)]
+        if not res:
+            await msg.reply_text(f"🔎 لا توجد نتائج لـ <b>{html.escape(text)}</b>", parse_mode=ParseMode.HTML); return
+        pairs = res[:20]
+        m = await msg.reply_text(f"🔎 <b>نتائج البحث</b> ({len(res)})\n{LINE}", parse_mode=ParseMode.HTML,
+                                 reply_markup=results_kb(pairs, 0))
+        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off),
+                      [f"{it['title']} • {s['title']}" for s, it in pairs])
+        return
+
+    # ── اقتراح/رسالة للأدمن ──
+    if ctx.user_data.pop("tolerate_msg", None):
+        pass
+
+    # ── أزرار الكيبورد الرئيسية ──
+    try:
+        stop_marquee(ctx, msg.chat_id)
+        new_view(msg.chat_id)
+    except Exception:
+        pass
+
+    plain = text
+    def eq(label):
+        return plain in (label, make_bold_unicode(label))
+
+    if eq(L("cart")):
+        ids = list((USERS.get(str(uid)) or {}).get("cart") or [])
+        pairs = [(s2, it2) for s2, it2 in ((find_item(i)) for i in ids) if it2]
+        rows = [[IB(btn(f"{TYPE_EMOJI.get(it2['type'],'📎')} {it2['title']}", 0),
+                    callback_data=f"itm:{s2['id']}:{it2['id']}:0", style="primary")] for s2, it2 in pairs]
+        rows = rows or [[IB(make_bold_unicode("🧺 السلة فارغة"), callback_data="noop")]]
+        if pairs:
+            rows.append([IB(make_bold_unicode("📥 إرسال كل السلة"), callback_data="cart:send", style="success"),
+                         IB(make_bold_unicode("🗑 تفريغ"), callback_data="cart:clear", style="danger")])
+        await msg.reply_text(f"🧺 <b>{make_bold_unicode('سلة التنزيل')}</b>\n{LINE}\nالعدد: <b>{len(pairs)}</b>",
+                             parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
+
+    if eq(L("tags")):
+        tags = all_tags()
+        rows = [[IB(make_bold_unicode(f"🏷 {t} ({n})"), callback_data=f"tagq:{t}", style="primary")] for t, n in list(tags.items())[:20]]
+        rows = rows or [[IB(make_bold_unicode("لا توجد وسوم بعد"), callback_data="noop")]]
+        await msg.reply_text(f"🏷 <b>{make_bold_unicode('الوسوم')}</b>\n{LINE}", parse_mode=ParseMode.HTML,
+                             reply_markup=InlineKeyboardMarkup(rows)); return
+
+    if eq(L("adv")):
+        rows = [[IB(make_bold_unicode("🔎 كل الأنواع"), callback_data="advt:all", style="success")]]
+        row = []
+        for t, e in TYPE_EMOJI.items():
+            row.append(IB(f"{e} {t}", callback_data=f"advt:{t}", style="primary"))
+            if len(row) == 3:
+                rows.append(row); row = []
+        if row:
+            rows.append(row)
+        await msg.reply_text(f"🔍 <b>{make_bold_unicode('بحث متقدم')}</b>\n{LINE}\nاختر نوع المحتوى ثم أرسل الكلمة:",
+                             parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
+
+    if eq(L("dltop")):
+        pairs = sorted(all_items(), key=lambda p: -dl_week(p[1]))[:15]
+        pairs = [(s2, it2) for s2, it2 in pairs if dl_week(it2) > 0] or pairs[:5]
+        m = await msg.reply_text(f"🏆 <b>{make_bold_unicode('الأكثر تحميلاً هذا الأسبوع')}</b>\n{LINE}",
+                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
+        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off), [i['title'] for _, i in pairs]); return
+
+    if eq(L("leader")):
+        top = sorted(USERS.values(), key=lambda u: -int(u.get("points", 0)))[:10]
+        me = USERS.get(str(uid)) or {}
+        lines = [f"🎖 <b>{make_bold_unicode('لوحة المتصدرين')}</b>\n{LINE}"]
+        for i, u in enumerate(top, 1):
+            lines.append(f"{'🥇🥈🥉'[i-1] if i <= 3 else str(i) + '.'} {html.escape(str(u.get('username') or u.get('name') or '—'))} — <b>{u.get('points',0)}</b>")
+        lines.append(LINE)
+        lines.append(f"👤 نقاطك: <b>{me.get('points',0)}</b> • مستواك: <b>{level_of(int(me.get('points',0)))}</b>")
+        await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML); return
+
+    if eq(L("hist")):
+        ids = list((USERS.get(str(uid)) or {}).get("hist") or [])
+        pairs = [(s2, it2) for s2, it2 in ((find_item(i)) for i in ids) if it2]
+        m = await msg.reply_text(f"🕓 <b>{make_bold_unicode('آخر ما شاهدت')}</b>\n{LINE}",
+                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
+        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off), [i['title'] for _, i in pairs]); return
+
+    if eq(L("feedback")):
+        ctx.user_data["fb"] = True
+        await msg.reply_text("✉️ أرسل رسالتك أو اقتراحك الآن وستصل للإدارة بإذن الله."); return
+
+    if eq(L("sections")):
+        m = await msg.reply_text(sections_header(), parse_mode=ParseMode.HTML, reply_markup=sections_kb(0, uid))
+        start_marquee(ctx, m, lambda off=0: sections_kb(off, uid),
+                      [f"{s['title']} • {len(s['items'])}" for s in DATA["sections"]])
+        return
+
+    if eq(L("new")):
+        pairs = sorted(all_items(), key=lambda p: -int(p[1].get("ts", 0)))[:15]
+        m = await msg.reply_text(f"🆕 <b>{make_bold_unicode('أحدث الإضافات')}</b>\n{LINE}",
+                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
+        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off),
+                      [f"{it['title']} • {s['title']}" for s, it in pairs]); return
+
+    if eq(L("top")):
+        pairs = sorted(all_items(), key=lambda p: -int(p[1].get("views", 0)))[:15]
+        m = await msg.reply_text(f"🔥 <b>{make_bold_unicode('الأكثر طلباً')}</b>\n{LINE}",
+                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
+        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off),
+                      [f"{it['title']} • {s['title']}" for s, it in pairs]); return
+
+    if eq(L("random")):
+        pool = all_items()
+        if not pool:
+            await msg.reply_text("📦 الأرشيف فارغ حالياً."); return
+        s, it = random.choice(pool)
+        if it["type"] == "pack":
+            head = pack_header(s, it)
+            kb = pack_kb(s, it, 0, uid)
+            if it.get("cover"):
+                await ctx.bot.send_photo(msg.chat_id, it["cover"], caption=head,
+                                         parse_mode=ParseMode.HTML, reply_markup=kb)
+            else:
+                await msg.reply_text(head, parse_mode=ParseMode.HTML, reply_markup=kb)
+        else:
+            await send_item(ctx.bot, msg.chat_id, it, item_kb(s["id"], 0, uid, it["id"]))
+        return
+
+    if eq(L("fav")):
+        favs = USERS.get(str(uid), {}).get("fav", [])
+        pairs = [(s, it) for s, it in all_items() if it["id"] in favs]
+        m = await msg.reply_text(f"⭐ <b>{make_bold_unicode('مفضلتك')}</b> ({len(pairs)})\n{LINE}",
+                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
+        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off),
+                      [f"{it['title']} • {s['title']}" for s, it in pairs]); return
+
+    if eq(L("about")):
+        await msg.reply_text(f"ℹ️ <b>{make_bold_unicode('حول')}</b>\n{LINE}\n{DATA['about']}\n{LINE}",
+                             parse_mode=ParseMode.HTML); return
+    if eq(L("contact")):
+        await msg.reply_text(f"📞 <b>{make_bold_unicode('تواصل')}</b>\n{LINE}\n{DATA['contact']}\n{LINE}",
+                             parse_mode=ParseMode.HTML); return
+    if eq(L("search")):
+        ctx.user_data["search"] = True
+        await msg.reply_text("🔎 أرسل كلمة البحث:"); return
+    if eq(L("admin")) and is_admin(uid):
+        await msg.reply_text(f"🛠 <b>{make_bold_unicode('لوحة الأدمن')}</b>\n{LINE}",
+                             parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
+
+    # ── رسالة عادية من مستخدم: تُحوَّل للأدمن ──
+    if text and not text.startswith("/") and not is_admin(uid):
+        for a in set(ADMIN_IDS) | set(DATA.get("admins", [])):
+            try:
+                await ctx.bot.send_message(
+                    a, f"✉️ <b>رسالة من مستخدم</b>\n{LINE}\n🆔 <code>{uid}</code>\n"
+                       f"{html.escape(text[:500])}", parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+        await msg.reply_text("✅ وصلت رسالتك للإدارة، جزاك الله خيراً.", reply_markup=main_kb(uid)); return
+
+    await msg.reply_text(welcome_text(), parse_mode=ParseMode.HTML, reply_markup=main_kb(uid))
+
+# ══════════════════ MAIN ══════════════════
+async def on_startup(app: Application):
+    if BACKUP_CHAT_ID:
+        try:
+            await app.bot.send_message(BACKUP_CHAT_ID,
+                f"♻️ <b>تم تشغيل البوت</b>\n{LINE}\n"
+                f"📦 المواد: <b>{sum(len(s['items']) for s in DATA['sections'])}</b>\n"
+                f"👥 المستخدمون: <b>{len(USERS)}</b>\n{LINE}\n"
+                "إن كان الأرشيف فارغاً بعد إعادة التشغيل، أرسل /restore ثم أعد توجيه آخر ملف archive.json.",
+                parse_mode=ParseMode.HTML)
+        except Exception as e:
+            log.warning("startup notice failed: %s", e)
 from flask import Flask
 import threading
 import os
@@ -1116,13 +1991,21 @@ def run_web():
     web_app.run(host='0.0.0.0', port=port)
 
 threading.Thread(target=run_web, daemon=True).start()
-
-
-def main() -> None:
-    LOGGER.info("Starting Telegram PDF OCR bot; DB=%s", DB_PATH)
-    application = build_application()
-    application.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-
+def main():
+    if not BOT_TOKEN:
+        raise SystemExit("⚠️ ضع BOT_TOKEN في أعلى الملف.")
+    app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("id", cmd_id))
+    app.add_handler(CommandHandler("backup", cmd_backup))
+    app.add_handler(CommandHandler("restore", cmd_restore))
+    app.add_handler(CallbackQueryHandler(on_cb))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, on_message))
+    if app.job_queue and BACKUP_CHAT_ID:
+        app.job_queue.run_repeating(job_backup, interval=AUTO_BACKUP_MIN * 60, first=120)
+    log.info("Archive bot v2 started ✅")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
