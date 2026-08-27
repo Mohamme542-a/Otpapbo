@@ -50,11 +50,11 @@ from telegram.ext import (
 # ========================= إعدادات البوت =========================
 # ضع التوكن بين علامتي الاقتباس، مثال: BOT_TOKEN = "123456:ABC..."
 # اتركه فارغاً أثناء التجربة ثم عدّله بنفسك.
-BOT_TOKEN = "8893399262:AAE7_7dHce4j4_Zp710opf0-qLjTIN0CDuc"
+BOT_TOKEN = "8893399262:AAG07XosgkW6YRaTanBpwFuJF9ozJj82x0M"
 
 # ضع رقم حساب الأدمن هنا، مثال: ADMIN_ID_TEXT = "123456789"
 # اتركه فارغاً إذا لم ترد تفعيل أوامر الإدارة.
-ADMIN_ID_TEXT = "8877567829"
+ADMIN_ID_TEXT = "8619521184"
 ADMIN_ID = int(ADMIN_ID_TEXT) if ADMIN_ID_TEXT.strip().isdigit() else 0
 
 # يحفظ البرنامج قاعدة البيانات والنتائج بجوار ملف bot.py، وهذا مناسب لـ Pydroid.
