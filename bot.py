@@ -66,13 +66,13 @@ MINO_API_KEY = "mino_live_286408936c463de9e9da08db0255ac1c"
 MINO_BASE_URL = "https://mino-sms-panel.xyz"
 
 # OTP group (send masked notice to this group). 0 = disabled.
-OTP_GROUP_ID = -1003921031641
-OTP_GROUP_LINK = "https://t.me/shHsu77"
+OTP_GROUP_ID = -1004367064162
+OTP_GROUP_LINK = "https://t.me/shabna6"
 OTP_GROUP_TITLE = "🔔 جروب OTP"
 MASK_GROUP_CODE = False
 BOT_USERNAME = "@appIbrahi5m_bot"
 
-REQUIRED_CHANNELS = [{"id": -1003974736720, "title": "القناة الأولى", "url": "https://t.me/gvbhvc669"}]
+REQUIRED_CHANNELS = [{"id": -1004427056886, "title": "القناة الأولى", "url": "https://t.me/ab52_4"}]
 FORCE_JOIN_GROUP = True
 STATE_FILE = "state.json"
 USERS_FILE = "users.json"
