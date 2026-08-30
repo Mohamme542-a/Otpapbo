@@ -1,18 +1,15 @@
 # ═══════════════════════════════════════════════════════════════
-# 🗂 ARCHIVE BOT v3 — بوت أرشيف مؤسسة إعلامية (Telegram)
-#   pip install "python-telegram-bot[job-queue]==21.6"
-#   python archive_bot_v3.py
-#
-#   ✦ أقسام قابلة للتعديل بالكامل من لوحة الأدمن
-#   ✦ رفع أي محتوى + قوائم متعددة الملفات (جودات) مع غلاف
-#   ✦ 🆕 شريط متحرك (Marquee) للعناوين الطويلة
-#   ✦ 🆕 نسخ احتياطي دائم واستعادة تلقائية (يحل مشكلة Render)
-#   ✦ 🆕 15 ميزة إضافية (مفضلة، مشاهدات، روابط مشاركة، اشتراك إجباري…)
+# 🤖 OTP APP IBRAHIM — Telegram Bot (Zenex + ZYRON + Combos + Mino)
+#   pip install python-telegram-bot==21.6 requests
+#   python bot.py
 # ═══════════════════════════════════════════════════════════════
-import json, logging, os, time, random, html, io
+import asyncio, json, logging, os, re, time
+from collections import defaultdict
+
+import requests
 from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup,
-    KeyboardButton, ReplyKeyboardMarkup, Update, InputFile,
+    KeyboardButton, ReplyKeyboardMarkup, Update,
 )
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -20,1964 +17,1658 @@ from telegram.ext import (
     ContextTypes, MessageHandler, filters,
 )
 
-# ══════════════════ CONFIG (املأ هنا) ══════════════════
-BOT_TOKEN = "8893399262:AAG07XosgkW6YRaTanBpwFuJF9ozJj82x0M"          # ← ضع توكن البوت هنا
-ADMIN_IDS = [8619521184]          # ← ضع ايدي الأدمن هنا مثال: [123456789]
-
-# قناة/مجموعة خاصة تُحفظ فيها النسخ الاحتياطية تلقائياً (اجعل البوت أدمن فيها)
-BACKUP_CHAT_ID = ""     # ← مثال: -1001234567890   (اتركه فارغاً لتعطيل النسخ التلقائي)
-
-# مجلد التخزين: على Render أنشئ Persistent Disk وضع مساره هنا مثل /var/data
-DATA_DIR = os.environ.get("DATA_DIR", ".")
-
-BOT_USERNAME = ""       # ← اسم البوت بدون @ (لروابط المشاركة) اختياري
-
-os.makedirs(DATA_DIR, exist_ok=True)
-DATA_FILE  = os.path.join(DATA_DIR, "archive.json")
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
-PAGE_SIZE  = 8          # عدد العناصر في الصفحة الواحدة
-
-# إعدادات الشريط المتحرك للعناوين الطويلة
-MARQUEE_WIDTH  = 100     # عدد الأحرف الظاهرة
-MARQUEE_EVERY  = 1.4    # سرعة الحركة بالثواني
-MARQUEE_TICKS  = 45
-WRAP_MAX_LINES = 3      # أقصى عدد أسطر في وضع «النص الكامل»     # عدد الحركات قبل التوقف (توفير موارد)
-
-AUTO_BACKUP_MIN = 20    # كل كم دقيقة تُرسل نسخة احتياطية
-
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-log = logging.getLogger("archive")
-
-# ══════════════════ TEXT BOLD HELPER ══════════════════
+# ══════════════════ TEXT BOLD HELPER (ألوان) ══════════════════
 def make_bold_unicode(text):
     out = []
-    for char in str(text):
-        c = ord(char)
-        if 65 <= c <= 90:      out.append(chr(c - 65 + 0x1D5D4))   # A-Z
-        elif 97 <= c <= 122:   out.append(chr(c - 97 + 0x1D5EE))   # a-z
-        elif 48 <= c <= 57:    out.append(chr(c - 48 + 0x1D7EC))   # 0-9
-        else:                  out.append(char)
+    for char in text:
+        codepoint = ord(char)
+        if 65 <= codepoint <= 90:  # A-Z
+            out.append(chr(codepoint - 65 + 0x1D5D4))
+        elif 97 <= codepoint <= 122:  # a-z
+            out.append(chr(codepoint - 97 + 0x1D5EE))
+        elif 48 <= codepoint <= 57:  # 0-9
+            out.append(chr(codepoint - 48 + 0x1D7EC))
+        else:
+            out.append(char)
     return "".join(out)
 
-LINE = "━━━━━━━━━━━━━━━━━━━━━"
+# ══════════════════ STICKERS SECTION (ANIMATED) ══════════════════
+# هذه الستيكرات كلها متحركة (Animated) وتم اختبارها
+SERVICE_STICKERS = {
+    "telegram":  "CAACAgQAAxkBAAMWalE9ysTxPY_EIMEcm0NLLR5TzQsAAoMVAALNcSBQbezxTdykgl48BA",
+    "instagram": "CAACAgQAAxkBAAMXalE-o09K3zpAd6TZZ76xX75VMk8AAhsRAALqYClQBW59mi-1AUY8BA",
+    "whatsapp":  "CAACAgQAAxkBAAMdalFNLyEkOG2l1Aw2V5PtSdeR7sQAAgMUAALzjSBTFdGk8PyPORM8BA",
+    "facebook":  "CAACAgQAAxkBAAMfalFw15F8SBq8Lk-gWb9B_puK_QkAAq4VAAJ-fxFTzOJ3pX02GEM8BA",
+    "tiktok":    "CAACAgQAAxkBAAMfalFw6FEoKF7x_xiLxYgFkNGc61gAAq0VAAJ-fxFTbGJtXnFQs8A8BA",
+    "imo":       "",  # ← ضع file_id لستيكر imo (أرسل الستيكر للبوت ليعطيك الـ file_id)
+    # لإضافة/تحديث: أرسل الستيكر مباشرة للبوت وسيرجع لك الـ file_id لتضعه هنا
+}
 
+# ══════════════════ CONFIG (edit here) ══════════════════
+BOT_TOKEN = "8983207332:AAEfB0INgIBq51FHvlOrXHnsd_UZ8kZOXZ4"
+ADMIN_IDS = [8619521184]
+
+# Zenex — direct credentials
+ZENEX_URL   = "https://api.zenexnetwork.com/v1"
+ZENEX_TOKEN = "ZNX_KB2H1GOF4PJR4H6FN9GJ1VMX"
+
+# ZYRON — direct credentials (auto-login on start)
+ZYRON_HOST = "http://151.80.19.204/ints/login"
+ZYRON_USER = "Hama11"                             # ← اسم المستخدم
+ZYRON_PASS = "Hama11"                             # ← كلمة السر
+
+# NumberPanel.tech — REST API (المصدر الثالث)
+NP_URL   = "https://numberpanel.tech/api"
+NP_TOKEN = "np_live_cXAtYgOl0nfrmdktshMoLztN9JEoOe6VUei7Df_d_sE"
+
+# Mino — الموقع الرابع (جديد)
+MINO_API_KEY = "mino_live_286408936c463de9e9da08db0255ac1c"
+MINO_BASE_URL = "https://mino-sms-panel.xyz"
+
+# OTP group (send masked notice to this group). 0 = disabled.
+OTP_GROUP_ID = -1003921031641
+OTP_GROUP_LINK = "https://t.me/shHsu77"
+OTP_GROUP_TITLE = "🔔 جروب OTP"
+MASK_GROUP_CODE = False
+BOT_USERNAME = "@Otptestre_bot"
+
+REQUIRED_CHANNELS = [{"id": -1003974736720, "title": "القناة الأولى", "url": "https://t.me/gvbhvc669"}]
+FORCE_JOIN_GROUP = True
+STATE_FILE = "state.json"
+USERS_FILE = "users.json"
+COMBO_FILE = "combos.json"
+
+NUMBER_TTL_MIN = 20
+POLL_INTERVAL  = 3
+POLL_TIMEOUT   = NUMBER_TTL_MIN * 60
+
+SERVICE_MAP = {
+    "whatsapp":  {"emoji": "🟢", "keys": ["whatsapp"],  "name": {"ar": "واتساب", "en": "WhatsApp",  "ku": "واتساپ"}},
+    "facebook":  {"emoji": "🔵", "keys": ["facebook"],  "name": {"ar": "فيسبوك", "en": "Facebook",  "ku": "فەیسبوک"}},
+    "telegram":  {"emoji": "✈️", "keys": ["telegram"],  "name": {"ar": "تيليجرام","en": "Telegram", "ku": "تێلێگرام"}},
+    "instagram": {"emoji": "📸", "keys": ["instagram"], "name": {"ar": "إنستجرام","en": "Instagram","ku": "ئینستاگرام"}},
+    "tiktok":    {"emoji": "🎵", "keys": ["tiktok"],    "name": {"ar": "تيك توك","en": "TikTok",    "ku": "تیک تۆک"}},
+    "imo":       {"emoji": "💬", "keys": ["imo"],       "name": {"ar": "إيمو",   "en": "imo",       "ku": "ئیمۆ"}},
+}
+
+# اسم كل دولة بثلاث لغات
+ISO_NAMES = {
+    "sd":{"ar":"السودان","en":"Sudan","ku":"سوودان"},
+    "eg":{"ar":"مصر","en":"Egypt","ku":"میسر"},
+    "sa":{"ar":"السعودية","en":"Saudi Arabia","ku":"سعوودیە"},
+    "ae":{"ar":"الإمارات","en":"UAE","ku":"ئیمارات"},
+    "kw":{"ar":"الكويت","en":"Kuwait","ku":"کوەیت"},
+    "qa":{"ar":"قطر","en":"Qatar","ku":"قەتەر"},
+    "bh":{"ar":"البحرين","en":"Bahrain","ku":"بەحرەین"},
+    "om":{"ar":"عُمان","en":"Oman","ku":"عومان"},
+    "ye":{"ar":"اليمن","en":"Yemen","ku":"یەمەن"},
+    "iq":{"ar":"العراق","en":"Iraq","ku":"عێراق"},
+    "sy":{"ar":"سوريا","en":"Syria","ku":"سووریا"},
+    "lb":{"ar":"لبنان","en":"Lebanon","ku":"لوبنان"},
+    "jo":{"ar":"الأردن","en":"Jordan","ku":"ئوردن"},
+    "ps":{"ar":"فلسطين","en":"Palestine","ku":"فەڵەستین"},
+    "il":{"ar":"إسرائيل","en":"Israel","ku":"ئیسرائیل"},
+    "tr":{"ar":"تركيا","en":"Turkey","ku":"تورکیا"},
+    "ir":{"ar":"إيران","en":"Iran","ku":"ئێران"},
+    "af":{"ar":"أفغانستان","en":"Afghanistan","ku":"ئەفغانستان"},
+    "pk":{"ar":"باكستان","en":"Pakistan","ku":"پاکستان"},
+    "in":{"ar":"الهند","en":"India","ku":"هیندستان"},
+    "bd":{"ar":"بنغلاديش","en":"Bangladesh","ku":"بەنگلادێش"},
+    "lk":{"ar":"سريلانكا","en":"Sri Lanka","ku":"سریلانکا"},
+    "np":{"ar":"نيبال","en":"Nepal","ku":"نیپاڵ"},
+    "mm":{"ar":"ميانمار","en":"Myanmar","ku":"میانمار"},
+    "th":{"ar":"تايلاند","en":"Thailand","ku":"تایلەند"},
+    "vn":{"ar":"فيتنام","en":"Vietnam","ku":"ڤیەتنام"},
+    "id":{"ar":"إندونيسيا","en":"Indonesia","ku":"ئەندۆنیسیا"},
+    "my":{"ar":"ماليزيا","en":"Malaysia","ku":"مالیزیا"},
+    "sg":{"ar":"سنغافورة","en":"Singapore","ku":"سینگاپور"},
+    "ph":{"ar":"الفلبين","en":"Philippines","ku":"فلیپین"},
+    "cn":{"ar":"الصين","en":"China","ku":"چین"},
+    "jp":{"ar":"اليابان","en":"Japan","ku":"یابان"},
+    "kr":{"ar":"كوريا الجنوبية","en":"South Korea","ku":"کۆریای باشوور"},
+    "kp":{"ar":"كوريا الشمالية","en":"North Korea","ku":"کۆریای باکوور"},
+    "kh":{"ar":"كمبوديا","en":"Cambodia","ku":"کەمبۆدیا"},
+    "la":{"ar":"لاوس","en":"Laos","ku":"لاوس"},
+    "mn":{"ar":"منغوليا","en":"Mongolia","ku":"مەنگۆلیا"},
+    "us":{"ar":"الولايات المتحدة","en":"United States","ku":"ئەمریکا"},
+    "ca":{"ar":"كندا","en":"Canada","ku":"کەنەدا"},
+    "mx":{"ar":"المكسيك","en":"Mexico","ku":"مەکسیک"},
+    "br":{"ar":"البرازيل","en":"Brazil","ku":"برازیل"},
+    "ar":{"ar":"الأرجنتين","en":"Argentina","ku":"ئەرجەنتین"},
+    "cl":{"ar":"تشيلي","en":"Chile","ku":"چیلی"},
+    "co":{"ar":"كولومبيا","en":"Colombia","ku":"کۆلۆمبیا"},
+    "pe":{"ar":"بيرو","en":"Peru","ku":"پیرو"},
+    "ve":{"ar":"فنزويلا","en":"Venezuela","ku":"ڤەنزوێلا"},
+    "ec":{"ar":"الإكوادور","en":"Ecuador","ku":"ئیکوادۆر"},
+    "bo":{"ar":"بوليفيا","en":"Bolivia","ku":"بۆلیڤیا"},
+    "py":{"ar":"باراغواي","en":"Paraguay","ku":"پاراگوای"},
+    "uy":{"ar":"أوروغواي","en":"Uruguay","ku":"ئوروگوای"},
+    "gy":{"ar":"غيانا","en":"Guyana","ku":"گویانا"},
+    "cu":{"ar":"كوبا","en":"Cuba","ku":"کووبا"},
+    "ht":{"ar":"هايتي","en":"Haiti","ku":"هایتی"},
+    "jm":{"ar":"جامايكا","en":"Jamaica","ku":"جامایکا"},
+    "gt":{"ar":"غواتيمالا","en":"Guatemala","ku":"گواتیمالا"},
+    "sv":{"ar":"السلفادور","en":"El Salvador","ku":"سالڤادۆر"},
+    "hn":{"ar":"هندوراس","en":"Honduras","ku":"هوندۆراس"},
+    "cr":{"ar":"كوستاريكا","en":"Costa Rica","ku":"کۆستاریکا"},
+    "pa":{"ar":"بنما","en":"Panama","ku":"پەنەما"},
+    "bz":{"ar":"بليز","en":"Belize","ku":"بێلیز"},
+    "gb":{"ar":"بريطانيا","en":"United Kingdom","ku":"بەریتانیا"},
+    "fr":{"ar":"فرنسا","en":"France","ku":"فەڕەنسا"},
+    "de":{"ar":"ألمانيا","en":"Germany","ku":"ئەڵمانیا"},
+    "it":{"ar":"إيطاليا","en":"Italy","ku":"ئیتاڵیا"},
+    "es":{"ar":"إسبانيا","en":"Spain","ku":"ئیسپانیا"},
+    "pt":{"ar":"البرتغال","en":"Portugal","ku":"پورتوگاڵ"},
+    "nl":{"ar":"هولندا","en":"Netherlands","ku":"هۆڵەندا"},
+    "be":{"ar":"بلجيكا","en":"Belgium","ku":"بەلجیکا"},
+    "ch":{"ar":"سويسرا","en":"Switzerland","ku":"سویسرا"},
+    "at":{"ar":"النمسا","en":"Austria","ku":"نەمسا"},
+    "se":{"ar":"السويد","en":"Sweden","ku":"سوید"},
+    "no":{"ar":"النرويج","en":"Norway","ku":"نەرویج"},
+    "dk":{"ar":"الدنمارك","en":"Denmark","ku":"دانمارک"},
+    "fi":{"ar":"فنلندا","en":"Finland","ku":"فینلاندا"},
+    "ie":{"ar":"أيرلندا","en":"Ireland","ku":"ئیرلەندا"},
+    "hu":{"ar":"المجر","en":"Hungary","ku":"هەنگاریا"},
+    "pl":{"ar":"بولندا","en":"Poland","ku":"پۆڵۆنیا"},
+    "ua":{"ar":"أوكرانيا","en":"Ukraine","ku":"ئۆکرانیا"},
+    "ru":{"ar":"روسيا","en":"Russia","ku":"ڕووسیا"},
+    "by":{"ar":"بيلاروسيا","en":"Belarus","ku":"بێلاڕوس"},
+    "lt":{"ar":"ليتوانيا","en":"Lithuania","ku":"لیتوانیا"},
+    "lv":{"ar":"لاتفيا","en":"Latvia","ku":"لاتڤیا"},
+    "ee":{"ar":"إستونيا","en":"Estonia","ku":"ئیستۆنیا"},
+    "md":{"ar":"مولدوفا","en":"Moldova","ku":"مۆلدۆڤا"},
+    "am":{"ar":"أرمينيا","en":"Armenia","ku":"ئەرمینیا"},
+    "az":{"ar":"أذربيجان","en":"Azerbaijan","ku":"ئازەربایجان"},
+    "ge":{"ar":"جورجيا","en":"Georgia","ku":"جۆرجیا"},
+    "kg":{"ar":"قيرغيزستان","en":"Kyrgyzstan","ku":"قرغیزستان"},
+    "tj":{"ar":"طاجيكستان","en":"Tajikistan","ku":"تاجیکستان"},
+    "tm":{"ar":"تركمانستان","en":"Turkmenistan","ku":"تورکمانستان"},
+    "uz":{"ar":"أوزبكستان","en":"Uzbekistan","ku":"ئوزبەکستان"},
+    "ro":{"ar":"رومانيا","en":"Romania","ku":"ڕۆمانیا"},
+    "bg":{"ar":"بلغاريا","en":"Bulgaria","ku":"بولگاریا"},
+    "rs":{"ar":"صربيا","en":"Serbia","ku":"سربیا"},
+    "hr":{"ar":"كرواتيا","en":"Croatia","ku":"کرواتیا"},
+    "si":{"ar":"سلوفينيا","en":"Slovenia","ku":"سلۆڤینیا"},
+    "sk":{"ar":"سلوفاكيا","en":"Slovakia","ku":"سلۆڤاکیا"},
+    "cz":{"ar":"التشيك","en":"Czech Republic","ku":"چیک"},
+    "ba":{"ar":"البوسنة","en":"Bosnia","ku":"بۆسنیا"},
+    "me":{"ar":"الجبل الأسود","en":"Montenegro","ku":"مۆنتێنیگرۆ"},
+    "mk":{"ar":"مقدونيا","en":"North Macedonia","ku":"مەقدۆنیا"},
+    "al":{"ar":"ألبانيا","en":"Albania","ku":"ئەڵبانیا"},
+    "gr":{"ar":"اليونان","en":"Greece","ku":"یۆنان"},
+    "cy":{"ar":"قبرص","en":"Cyprus","ku":"قوبرس"},
+    "mt":{"ar":"مالطا","en":"Malta","ku":"ماڵتا"},
+    "is":{"ar":"آيسلندا","en":"Iceland","ku":"ئایسلاندا"},
+    "lu":{"ar":"لوكسمبورغ","en":"Luxembourg","ku":"لوکسەمبورگ"},
+    "mc":{"ar":"موناكو","en":"Monaco","ku":"مۆناکۆ"},
+    "ad":{"ar":"أندورا","en":"Andorra","ku":"ئەندۆرا"},
+    "gi":{"ar":"جبل طارق","en":"Gibraltar","ku":"جەبەل تارق"},
+    "fo":{"ar":"جزر فارو","en":"Faroe Islands","ku":"دوورگەکانی فارۆ"},
+    "gl":{"ar":"غرينلاند","en":"Greenland","ku":"گرینلاند"},
+    "au":{"ar":"أستراليا","en":"Australia","ku":"ئوسترالیا"},
+    "nz":{"ar":"نيوزيلندا","en":"New Zealand","ku":"نیوزیلاند"},
+    "fj":{"ar":"فيجي","en":"Fiji","ku":"فیجی"},
+    "pg":{"ar":"بابوا غينيا الجديدة","en":"Papua New Guinea","ku":"پاپوا"},
+    "ma":{"ar":"المغرب","en":"Morocco","ku":"مەغریب"},
+    "dz":{"ar":"الجزائر","en":"Algeria","ku":"جەزائیر"},
+    "tn":{"ar":"تونس","en":"Tunisia","ku":"تونس"},
+    "ly":{"ar":"ليبيا","en":"Libya","ku":"لیبیا"},
+    "et":{"ar":"إثيوبيا","en":"Ethiopia","ku":"ئەتیۆپیا"},
+    "so":{"ar":"الصومال","en":"Somalia","ku":"سۆماڵ"},
+    "dj":{"ar":"جيبوتي","en":"Djibouti","ku":"جیبووتی"},
+    "tz":{"ar":"تنزانيا","en":"Tanzania","ku":"تانزانیا"},
+    "ug":{"ar":"أوغندا","en":"Uganda","ku":"ئوگاندا"},
+    "bi":{"ar":"بوروندي","en":"Burundi","ku":"بوروندی"},
+    "mz":{"ar":"موزمبيق","en":"Mozambique","ku":"مۆزەمبیک"},
+    "zm":{"ar":"زامبيا","en":"Zambia","ku":"زامبیا"},
+    "zw":{"ar":"زيمبابوي","en":"Zimbabwe","ku":"زیمبابوی"},
+    "na":{"ar":"ناميبيا","en":"Namibia","ku":"نامیبیا"},
+    "mw":{"ar":"مالاوي","en":"Malawi","ku":"ماڵاوی"},
+    "ls":{"ar":"ليسوتو","en":"Lesotho","ku":"لیسۆتۆ"},
+    "bw":{"ar":"بوتسوانا","en":"Botswana","ku":"بۆتسوانا"},
+    "sz":{"ar":"إسواتيني","en":"Eswatini","ku":"سوازیلاند"},
+    "km":{"ar":"جزر القمر","en":"Comoros","ku":"کۆمۆرۆس"},
+    "gm":{"ar":"غامبيا","en":"Gambia","ku":"گامبیا"},
+    "sn":{"ar":"السنغال","en":"Senegal","ku":"سینیگاڵ"},
+    "mr":{"ar":"موريتانيا","en":"Mauritania","ku":"مۆریتانیا"},
+    "ml":{"ar":"مالي","en":"Mali","ku":"ماڵی"},
+    "gn":{"ar":"غينيا","en":"Guinea","ku":"گینێ"},
+    "bf":{"ar":"بوركينا فاسو","en":"Burkina Faso","ku":"بورکینا فاسۆ"},
+    "ne":{"ar":"النيجر","en":"Niger","ku":"نیجەر"},
+    "tg":{"ar":"توغو","en":"Togo","ku":"تۆگۆ"},
+    "bj":{"ar":"بنين","en":"Benin","ku":"بێنین"},
+    "mu":{"ar":"موريشيوس","en":"Mauritius","ku":"مۆریشس"},
+    "lr":{"ar":"ليبيريا","en":"Liberia","ku":"لیبێریا"},
+    "sl":{"ar":"سيراليون","en":"Sierra Leone","ku":"سیرالیۆن"},
+    "cm":{"ar":"الكاميرون","en":"Cameroon","ku":"کامیرۆن"},
+    "ci":{"ar":"ساحل العاج","en":"Ivory Coast","ku":"کۆتی دیڤوار"},
+    "mg":{"ar":"مدغشقر","en":"Madagascar","ku":"مەدەگاسکار"},
+    "td":{"ar":"تشاد","en":"Chad","ku":"چاد"},
+    "cf":{"ar":"إفريقيا الوسطى","en":"Central African Republic","ku":"ئەفریقای ناوەڕاست"},
+    "cv":{"ar":"الرأس الأخضر","en":"Cape Verde","ku":"کاپڤێرد"},
+    "st":{"ar":"ساو تومي","en":"Sao Tome","ku":"ساوتۆمێ"},
+    "gq":{"ar":"غينيا الاستوائية","en":"Equatorial Guinea","ku":"گینێی ئیستوایی"},
+    "ga":{"ar":"الغابون","en":"Gabon","ku":"گابۆن"},
+    "cg":{"ar":"الكونغو","en":"Congo","ku":"کۆنگۆ"},
+    "cd":{"ar":"جمهورية الكونغو الديمقراطية","en":"DR Congo","ku":"کۆنگۆی د.ک."},
+    "ao":{"ar":"أنغولا","en":"Angola","ku":"ئەنگۆلا"},
+    "gw":{"ar":"غينيا بيساو","en":"Guinea-Bissau","ku":"گینێ بیساو"},
+    "sh":{"ar":"سانت هيلينا","en":"Saint Helena","ku":"سانت هیلینا"},
+    "sc":{"ar":"سيشل","en":"Seychelles","ku":"سیشێل"},
+    "rw":{"ar":"رواندا","en":"Rwanda","ku":"ڕواندا"},
+    "er":{"ar":"إريتريا","en":"Eritrea","ku":"ئێریتریا"},
+    "ng":{"ar":"نيجيريا","en":"Nigeria","ku":"نایجیریا"},
+    "ke":{"ar":"كينيا","en":"Kenya","ku":"کینیا"},
+    "gh":{"ar":"غانا","en":"Ghana","ku":"گانا"},
+    "za":{"ar":"جنوب أفريقيا","en":"South Africa","ku":"باشوری ئەفریقا"},
+}
+
+CC_TO_ISO = {
+    "20":"eg","27":"za","30":"gr","31":"nl","32":"be","33":"fr","34":"es","36":"hu",
+    "39":"it","40":"ro","41":"ch","43":"at","44":"gb","45":"dk","46":"se","47":"no",
+    "48":"pl","49":"de","51":"pe","52":"mx","53":"cu","54":"ar","55":"br","56":"cl",
+    "57":"co","58":"ve","60":"my","61":"au","62":"id","63":"ph","64":"nz","65":"sg",
+    "66":"th","81":"jp","82":"kr","84":"vn","86":"cn","90":"tr","91":"in","92":"pk",
+    "93":"af","94":"lk","95":"mm","98":"ir","1":"us","7":"ru",
+    "212":"ma","213":"dz","216":"tn","218":"ly","220":"gm","221":"sn","222":"mr",
+    "223":"ml","224":"gn","225":"ci","226":"bf","227":"ne","228":"tg","229":"bj",
+    "230":"mu","231":"lr","232":"sl","233":"gh","234":"ng","235":"td","236":"cf",
+    "237":"cm","238":"cv","239":"st","240":"gq","241":"ga","242":"cg","243":"cd",
+    "244":"ao","245":"gw","247":"sh","248":"sc","249":"sd","250":"rw","251":"et",
+    "252":"so","253":"dj","254":"ke","255":"tz","256":"ug","257":"bi","258":"mz",
+    "260":"zm","261":"mg","263":"zw","264":"na","265":"mw","266":"ls","267":"bw",
+    "268":"sz","269":"km","290":"sh","291":"er","298":"fo","299":"gl",
+    "350":"gi","351":"pt","352":"lu","353":"ie","354":"is","355":"al","356":"mt",
+    "357":"cy","358":"fi","359":"bg","370":"lt","371":"lv","372":"ee","373":"md",
+    "374":"am","375":"by","376":"ad","377":"mc","380":"ua","381":"rs","382":"me",
+    "385":"hr","386":"si","387":"ba","389":"mk","420":"cz","421":"sk",
+    "501":"bz","502":"gt","503":"sv","504":"hn","506":"cr","507":"pa","509":"ht",
+    "591":"bo","592":"gy","593":"ec","595":"py","598":"uy",
+    "670":"tl","675":"pg","679":"fj","850":"kp","852":"hk","853":"mo","855":"kh",
+    "856":"la","880":"bd","886":"tw",
+    "960":"mv","961":"lb","962":"jo","963":"sy","964":"iq","965":"kw","966":"sa",
+    "967":"ye","968":"om","970":"ps","971":"ae","972":"il","973":"bh","974":"qa",
+    "975":"bt","976":"mn","977":"np","992":"tj","993":"tm","994":"az","995":"ge",
+    "996":"kg","998":"uz",
+}
+
+def find_iso_by_name(text):
+    """يقبل ISO / اسم دولة (عربي/إن/كردي) / رمز اتصال / رقم كامل."""
+    s = str(text or "").strip().lower()
+    if not s: return ""
+    if s in ISO_NAMES: return s
+    if s in CC_TO_ISO: return CC_TO_ISO[s]
+    digits = re.sub(r"\D","", s)
+    if digits:
+        for L in (4,3,2,1):
+            if len(digits) >= L and digits[:L] in CC_TO_ISO: return CC_TO_ISO[digits[:L]]
+    for iso, d in ISO_NAMES.items():
+        for v in d.values():
+            if v.lower() == s: return iso
+    for iso, d in ISO_NAMES.items():
+        for v in d.values():
+            if len(s) >= 3 and (s in v.lower() or v.lower() in s): return iso
+    return ""
+
+logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
+log = logging.getLogger("otp")
+
+# ══════════════════ i18n ══════════════════
+T = {
+    "ar": {"hi":"أهلاً","get_number":"📞 احصل على رقم","language":"🌐 اللغة",
+        "admin_panel":"🛠 لوحة الأدمن","pick_service":"📱 اختر الخدمة:","pick_country":"🌍 اختر الدولة:",
+        "no_country":"⚠️ لا توجد دول متاحة حالياً.","reserving":"⏳ جاري حجز الرقم...",
+        "reserved":"✅ تم حجز الرقم","no_range":"⚠️ لا يوجد رقم متاح لهذه الدولة.",
+        "waiting_code":"⏳ بانتظار الكود...","code_arrived":"🔐 وصل الكود!",
+        "cancel_number":"❌ إلغاء","change_country":"🌍 تغيير الدولة","new_number":"🔄 رقم جديد",
+        "back":"⬅️ رجوع","copy":"📋 نسخ","timeout":"⌛ انتهت المهلة","banned":"⛔ محظور",
+        "admin_only":"⛔ للأدمن فقط","choose_lang":"🌐 اختر لغتك:","lang_set":"✅ تم تغيير اللغة",
+        "add_range_zenex":"➕ إضافة رينج زينيكس","add_range_mino":"➕ إضافة رينج Mino",
+        "code_label":"🔑 الرمز","copy_hint":"(اضغط على الرمز/الرقم لنسخه)",
+        "back_ar":"⬅️ رجوع",
+        "operator":"📶 المشغل","service":"📱 الخدمة","country":"🌍 الدولة","number":"☎️ الرقم",
+        "must_join":"🔒 اشترك أولاً في القنوات/الجروب التالية للاستمرار:",
+        "check_sub":"✅ تحققت من الاشتراك","not_subbed":"⚠️ لم تشترك في كل القنوات بعد.",
+        "open_bot":"🤖 افتح البوت لرؤية الكود","join_group":"🔔 جروب OTP","goto_group":"🔔 اذهب لجروب OTP",
+        "goto_channel":"📢 اذهب للقناة","otp_arrived":"🔔 وصل OTP!","pulled_by":"👤 سحب بواسطة","code_word":"الرمز",
+        "code_hidden":"🔒 الكود مخفي — افتح البوت لعرضه",
+        "copy_code":"📋 نسخ الكود","repeat_last":"🔁 كرر آخر طلب","history":"📜 السجل","my_history":"📜 سجل رموزي",
+        "no_history":"لا يوجد أي رمز في السجل بعد.","waiting_second":"⏳ بانتظار كود ثاني (60ث)...",
+        "second_code":"🔐 كود ثانٍ وصل!","stats_me":"📊 إحصائياتي","favorite":"⭐ المفضلة"},
+    "en": {"hi":"Hi","get_number":"📞 Get Number","language":"🌐 Language",
+        "admin_panel":"🛠 Admin","pick_service":"📱 Choose a service:","pick_country":"🌍 Choose a country:",
+        "no_country":"⚠️ No countries available.","reserving":"⏳ Reserving...",
+        "reserved":"✅ Number reserved","no_range":"⚠️ No number available.",
+        "waiting_code":"⏳ Waiting for code...","code_arrived":"🔐 Code received!",
+        "cancel_number":"❌ Cancel","change_country":"🌍 Change Country","new_number":"🔄 New Number",
+        "back":"⬅️ Back","copy":"📋 Copy","timeout":"⌛ Timed out","banned":"⛔ Banned",
+        "admin_only":"⛔ Admin only","choose_lang":"🌐 Choose language:","lang_set":"✅ Language updated",
+        "add_range_zenex":"➕ Add Zenex range","add_range_mino":"➕ Add Mino range",
+        "code_label":"🔑 Code","copy_hint":"(Tap the code/number to copy)",
+        "back_ar":"⬅️ Back",
+        "operator":"📶 Operator","service":"📱 Service","country":"🌍 Country","number":"☎️ Number",
+        "must_join":"🔒 Join the following channels/group to continue:",
+        "check_sub":"✅ I have joined","not_subbed":"⚠️ Not subscribed to all channels.",
+        "open_bot":"🤖 Open the bot to see the code","join_group":"🔔 OTP Group","goto_group":"🔔 Go to OTP Group",
+        "goto_channel":"📢 Go to Channel","otp_arrived":"🔔 OTP Received!","pulled_by":"👤 Pulled by","code_word":"Code",
+        "code_hidden":"🔒 Code hidden — open the bot to view it",
+        "copy_code":"📋 Copy Code","repeat_last":"🔁 Repeat Last","history":"📜 History","my_history":"📜 My OTP History",
+        "no_history":"No OTPs in history yet.","waiting_second":"⏳ Waiting for second code (60s)...",
+        "second_code":"🔐 Second code received!","stats_me":"📊 My Stats","favorite":"⭐ Favorites"},
+    "ku": {"hi":"بەخێربێی","get_number":"📞 وەرگرتنی ژمارە","language":"🌐 زمان",
+        "admin_panel":"🛠 ئەدمین","pick_service":"📱 خزمەتگوزارییەک هەڵبژێرە:","pick_country":"🌍 وڵاتێک هەڵبژێرە:",
+        "no_country":"⚠️ هیچ وڵاتێک بەردەست نییە.","reserving":"⏳ خەریکە ژمارە دەگرێت...",
+        "reserved":"✅ ژمارە گیرا","no_range":"⚠️ ژمارە بەردەست نییە.",
+        "waiting_code":"⏳ چاوەڕوانی کۆد...","code_arrived":"🔐 کۆد گەیشت!",
+        "cancel_number":"❌ هەڵوەشاندنەوە","change_country":"🌍 گۆڕینی وڵات","new_number":"🔄 ژمارەیەکی نوێ",
+        "back":"⬅️ گەڕانەوە","copy":"📋 لەبەرگرتنەوە","timeout":"⌛ کاتی تەواو بوو","banned":"⛔ قەدەغەکراوی",
+        "admin_only":"⛔ تەنیا بۆ ئەدمین","choose_lang":"🌐 زمانەکەت هەڵبژێرە:","lang_set":"✅ زمان گۆڕدرا",
+        "add_range_zenex":"➕ زیادکردنی ڕەنجی Zenex","add_range_mino":"➕ زیادکردنی ڕەنجی Mino",
+        "code_label":"🔑 کۆد","copy_hint":"(کلیک لە کۆد/ژمارە بۆ کۆپیکردن)",
+        "back_ar":"⬅️ گەڕانەوە",
+        "operator":"📶 ئۆپەراتۆر","service":"📱 خزمەتگوزاری","country":"🌍 وڵات","number":"☎️ ژمارە",
+        "must_join":"🔒 پێویستە لەم کەناڵ/گرووپانە بەشدار بیت:",
+        "check_sub":"✅ بەشداربووم","not_subbed":"⚠️ بەشدار نیت لە هەموو کەناڵەکاندا.",
+        "open_bot":"🤖 بۆتەکە بکەرەوە بۆ بینینی کۆد","join_group":"🔔 گرووپی OTP","goto_group":"🔔 بڕۆ بۆ گرووپی OTP",
+        "goto_channel":"📢 بڕۆ بۆ کەناڵ","otp_arrived":"🔔 کۆد گەیشت!","pulled_by":"👤 وەرگیرا لەلایەن","code_word":"کۆد",
+        "code_hidden":"🔒 کۆد شاراوەیە — بۆتەکە بکەرەوە",
+        "copy_code":"📋 کۆپی کۆد","repeat_last":"🔁 دووبارەکردنەوە","history":"📜 مێژوو","my_history":"📜 مێژووی کۆدەکانم",
+        "no_history":"هیچ کۆدێک لە مێژوودا نییە.","waiting_second":"⏳ چاوەڕوانی کۆدی دووەم (٦٠چ)...",
+        "second_code":"🔐 کۆدی دووەم گەیشت!","stats_me":"📊 ئامارەکانم","favorite":"⭐ دڵخوازەکان"},
+}
+def tr(lang, k): return T.get(lang, T["ar"]).get(k, T["ar"].get(k, k))
+def svc_name(sid, lang):
+    s = SERVICE_MAP.get(sid)
+    return s["name"].get(lang, s["name"]["en"]) if s else sid
+def iso_name(iso, lang):
+    d = ISO_NAMES.get((iso or "").lower())
+    return d.get(lang, d.get("en")) if d else (iso or "").upper()
+
+# ══════════════════ Storage ══════════════════
+def _load(fp, default):
+    if not os.path.exists(fp): _save(fp, default); return default
+    try:
+        with open(fp, "r", encoding="utf-8") as f: return json.load(f)
+    except Exception: return default
+def _save(fp, data):
+    with open(fp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+STATE  = _load(STATE_FILE, {"disabled": [], "custom": {}, "provider": "zenex", "mino_ranges": []})
+USERS  = _load(USERS_FILE, {})
+COMBOS = _load(COMBO_FILE, {})
+STATE.setdefault("provider", "zenex"); STATE.setdefault("custom", {}); STATE.setdefault("disabled", []); STATE.setdefault("mino_ranges", [])
+
+def save_state(): _save(STATE_FILE, STATE)
+def save_users(): _save(USERS_FILE, USERS)
+def save_combos(): _save(COMBO_FILE, COMBOS)
+
+RESERVATIONS = {}
+LAST_OTP = _load("last_otp.json", None)
+
+def save_last_otp(): _save("last_otp.json", LAST_OTP)
+def _norm_num(n): return re.sub(r"\D", "", str(n or ""))
+def register_reservation(number, uid, sid, iso, svc_name_, country):
+    k = _norm_num(number)
+    if not k: return
+    RESERVATIONS[k] = {"uid": int(uid), "sid": sid, "iso": iso, "svc_name": svc_name_, "country": country, "ts": int(time.time())}
+def unregister_reservation(number): RESERVATIONS.pop(_norm_num(number), None)
+def find_reserver(number): return RESERVATIONS.get(_norm_num(number))
+
+def set_last_otp(uid, number, code, svc_name_, country, iso):
+    global LAST_OTP
+    u = USERS.get(str(uid), {}) if uid else {}
+    LAST_OTP = {"uid": int(uid) if uid else 0, "name": u.get("name") or "", "username": u.get("username") or "", "number": str(number), "code": str(code), "service": svc_name_, "country": country, "iso": iso, "ts": int(time.time())}
+    save_last_otp()
+
+def get_user(uid):
+    k = str(uid)
+    if k not in USERS:
+        USERS[k] = {"lang":"ar","banned":False, "stats":{"numbers":0,"otps":0,"cancels":0}, "history":[], "joined": int(time.time())}
+        save_users()
+    u = USERS[k]
+    u.setdefault("lang","ar"); u.setdefault("stats",{"numbers":0,"otps":0,"cancels":0}); u.setdefault("history",[])
+    return u
+
+def note_user(tg_user):
+    u = get_user(tg_user.id)
+    try:
+        u["name"] = tg_user.full_name
+        u["username"] = tg_user.username or ""
+        u.setdefault("joined", int(time.time()))
+        save_users()
+    except Exception: pass
+    return u
+
+def flag(iso):
+    if not iso or len(iso) != 2: return "🌍"
+    return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in iso.upper())
+def guess_iso(number):
+    d = re.sub(r"\D", "", number or "")
+    for L in (3,2,1):
+        if len(d) >= L and d[:L] in CC_TO_ISO: return CC_TO_ISO[d[:L]]
+    return ""
+def mask_number(num):
+    d = re.sub(r"\D", "", num or "")
+    if len(d) < 6: return "•" * len(d)
+    prefix = "+" if str(num).startswith("+") else ""
+    return f"{prefix}{d[:3]}{'★'*(len(d)-5)}{d[-2:]}"
+def mask_code(code):
+    s = str(code or "")
+    if len(s) <= 2: return "★" * max(1, len(s))
+    return f"{s[0]}{'★'*(len(s)-1)}"
+
+# ══════════════════ Zenex ══════════════════
+def zx_headers(): return {"mapikey": ZENEX_TOKEN, "Content-Type":"application/json","Accept":"application/json"}
+def zx_active_ranges():
+    try:
+        r = requests.get(f"{ZENEX_URL}/active-ranges", headers=zx_headers(), timeout=15)
+        if not r.ok: return []
+        return ((r.json().get("data") or {}).get("active_ranges") or [])
+    except Exception: return []
+def zx_get_number(rng):
+    try:
+        r = requests.post(f"{ZENEX_URL}/getnum", headers=zx_headers(), json={"range": rng, "is_national": False, "remove_plus": False}, timeout=20)
+        if not r.ok: return None
+        d = r.json().get("data") or {}
+        num = d.get("number") or d.get("copy") or d.get("full_number")
+        if not num: return None
+        return {"number": str(num), "country": d.get("country") or "", "iso": (d.get("iso") or "").lower(), "operator": d.get("operator") or ""}
+    except Exception: return None
+def zx_cancel(number):
+    try: requests.post(f"{ZENEX_URL}/cancelnum", headers=zx_headers(), json={"number": number}, timeout=10)
+    except Exception: pass
+def zx_fetch_otps():
+    try:
+        r = requests.get(f"{ZENEX_URL}/numsuccess/info", headers=zx_headers(), timeout=15)
+        if not r.ok: return []
+        return ((r.json().get("data") or {}).get("otps") or [])
+    except Exception: return []
+
+# ══════════════════ ZYRON ══════════════════
+_ZY_SESS, _ZY_TS = None, 0
+def _solve_captcha(html_):
+    m = re.search(r"(\d+)\s*([\+\-\*x×])\s*(\d+)\s*=", html_)
+    if not m: return "0"
+    a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+    return str({"+":a+b,"-":a-b,"*":a*b,"x":a*b,"×":a*b}.get(op, a+b))
+def zyron_login():
+    global _ZY_SESS, _ZY_TS
+    if not (ZYRON_HOST and ZYRON_USER and ZYRON_PASS): return None
+    if _ZY_SESS and time.time() - _ZY_TS < 1800: return _ZY_SESS
+    s = requests.Session()
+    try:
+        r = s.get(ZYRON_HOST + "/", timeout=15)
+        s.post(ZYRON_HOST + "/signin", data={"username":ZYRON_USER,"password":ZYRON_PASS,"capt":_solve_captcha(r.text)}, timeout=15, allow_redirects=True)
+        _ZY_SESS, _ZY_TS = s, time.time()
+        log.info("ZYRON login OK")
+        return s
+    except Exception as e:
+        log.warning("ZYRON login failed: %s", e); return None
+
+# ══════════════════ NumberPanel ══════════════════
+class NumberPanelSource:
+    def __init__(self, base_url, token):
+        self.base = base_url.rstrip("/")
+        self.token = token
+        self._seen_ids = set()
+
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+
+    def _get(self, path, params=None):
+        try:
+            r = requests.get(f"{self.base}{path}", headers=self._headers(), params=params or {}, timeout=15)
+            if r.ok: return r.json()
+        except Exception: pass
+        return None
+
+    def _post(self, path, payload):
+        try:
+            r = requests.post(f"{self.base}{path}", headers=self._headers(), json=payload, timeout=15)
+            if r.ok: return r.json()
+        except Exception: pass
+        return None
+
+    def get_my_countries_with_services(self):
+        found = []
+        try:
+            data = self._get("/my_numbers")
+            if isinstance(data, dict):
+                numbers = data.get("data") or data.get("numbers") or []
+                for n in numbers:
+                    num = n.get("number") or n.get("phone") or ""
+                    service = n.get("service") or "general"
+                    if not num: continue
+                    clean_num = re.sub(r"\D", "", num)
+                    iso = guess_iso(clean_num)
+                    if iso:
+                        found.append({"iso": iso, "name": iso_name(iso, "en") or iso.upper(), "service": service.lower()})
+        except Exception as e: logging.warning(f"NP get_my_countries_with_services error: {e}")
+        return found
+
+    def ranges(self):
+        out = []
+        try:
+            pairs = self.get_my_countries_with_services()
+            if not pairs: return []
+            for p in pairs:
+                iso = p["iso"]
+                service = p["service"]
+                for sid, svc in SERVICE_MAP.items():
+                    if service in svc["keys"] or service == sid:
+                        out.append({"service": sid, "range": f"np::{sid}::{iso}", "iso": iso, "hits": 1, "country": p["name"]})
+        except Exception as e: logging.warning(f"NP ranges error: {e}")
+        return out
+
+    def fetch_otps(self):
+        new = []
+        try:
+            data = self._get("/my_otps", {"limit": 50})
+            if not isinstance(data, dict) or not data.get("success"): return []
+            items = data.get("otps") or []
+            for it in items:
+                if not isinstance(it, dict): continue
+                number = str(it.get("number") or "").strip()
+                message = str(it.get("message") or "").strip()
+                code = str(it.get("otp_code") or "").strip()
+                if not number or not code: continue
+                uid = f"np:{number}:{code}"
+                if uid in self._seen_ids: continue
+                self._seen_ids.add(uid)
+                new.append({"id": uid, "number": number, "code": code, "otp": code, "message": message, "date": it.get("timestamp") or "", "service": it.get("service") or "", "country": it.get("country") or ""})
+            if len(self._seen_ids) > 10000: self._seen_ids = set(list(self._seen_ids)[-5000:])
+        except Exception as e: logging.warning(f"NP fetch_otps error: {e}")
+        return new
+
+    def request_number(self, service, country):
+        data = self._post("/request_number", {"service": service, "country": country})
+        if data:
+            number = data.get("number") or data.get("phone")
+            if number: return {"number": number}
+        return None
+
+    def get_number(self, rng):
+        try:
+            _, sid, iso = rng.split("::", 2)
+            country_name = iso_name(iso, "en")
+            res = self.request_number(sid, country_name)
+            if res: return {"number": res["number"], "country": country_name, "iso": iso, "operator": "NumberPanel"}
+        except Exception: pass
+        return None
+
+    def status(self):
+        try:
+            data = self._get("/otp", {"count": 1})
+            return (True, "✅ ناجح (متصل)") if data is not None else (False, "❌ فشل")
+        except Exception as e: return False, f"❌ خطأ: {e}"
+
+NP = NumberPanelSource(NP_URL, NP_TOKEN)
+
+# ══════════════════ Mino (الموقع الرابع) ══════════════════
+# API الفعلي لموقع mino-sms-panel.xyz (حسب توثيق /docs):
+#   POST/GET /getnumber   ?api_key=&rid=&national_format=0/1&remove_plus=0/1
+#   GET      /check       ?api_key=&number=
+#   GET      /live        ?api_key=
+#   GET      /success_otp ?api_key=
+#   GET      /console     ?api_key=
+# ملاحظة: الرينجات (rid) تُضاف يدوياً من الأدمن (لا يوجد endpoint لسردها).
+class MinoSource:
+    def __init__(self, api_key, base_url):
+        self.api_key = api_key
+        self.base = base_url.rstrip("/")
+        self._seen_ids = set()
+
+    def _get(self, path, params=None):
+        try:
+            params = dict(params or {})
+            params.setdefault("api_key", self.api_key)
+            r = requests.get(f"{self.base}{path}", params=params, timeout=15)
+            if r.ok:
+                try: return r.json()
+                except Exception: return {"raw": r.text}
+        except Exception as e:
+            logging.warning(f"Mino GET {path} error: {e}")
+        return None
+
+    def ranges(self):
+        """يبني الرينجات من قائمة STATE['mino_ranges'] التي يضيفها الأدمن يدوياً."""
+        out = []
+        for r in STATE.get("mino_ranges", []):
+            rid  = str(r.get("rid") or "").strip()
+            sid  = (r.get("sid") or "").lower()
+            iso  = (r.get("iso") or "").lower()
+            hits = int(r.get("hits") or 1)
+            if not rid or not sid or sid not in SERVICE_MAP: continue
+            country = r.get("country") or iso_name(iso, "en") or iso.upper()
+            out.append({
+                "service": sid,
+                "range":   f"mino::{rid}::{sid}::{iso}",
+                "iso":     iso,
+                "hits":    hits,
+                "country": country,
+            })
+        return out
+
+    def get_number(self, rng):
+        """rng = mino::<rid>::<sid>::<iso> — يعالج JSON + text (ACCESS_NUMBER:ID:NUMBER) + raw."""
+        try:
+            parts = rng.split("::")
+            if len(parts) < 4: return None
+            _, rid, sid, iso = parts[0], parts[1], parts[2], parts[3]
+            # نفس صيغة URL في bot.py المرجعي مع fallback params
+            url = f"{self.base}/getnumber"
+            params = {"api_key": self.api_key, "rid": rid, "range": rid,
+                      "target": rid, "national": 1, "remove_plus": 1}
+            r = requests.get(url, params=params, timeout=20)
+            if not r.ok:
+                logging.warning(f"Mino getnumber HTTP {r.status_code}: {r.text[:200]}")
+                return None
+            raw_text = r.text.strip()
+            if not raw_text: return None
+            err_keywords = ["NO_NUMBERS","NO_NUMBER","OUT_OF_STOCK","BANNED","LIMIT","ERROR","BALANCE","EMPTY","SQL"]
+            if any(err in raw_text.upper() for err in err_keywords):
+                logging.info(f"Mino no number for rid={rid}: {raw_text[:100]}")
+                return None
+            number = None
+            # 1) JSON
+            try:
+                data = r.json()
+                if isinstance(data, dict):
+                    if str(data.get("status")).lower() in ["error","fail","false"]:
+                        return None
+                    d = data.get("data") if isinstance(data.get("data"), dict) else data
+                    number = (d.get("full_number") or d.get("number") or d.get("phone")
+                              or d.get("phoneNumber") or d.get("mobile"))
+            except Exception:
+                pass
+            # 2) split على : أو |
+            if not number:
+                for part in reversed(re.split(r'[:|]', raw_text)):
+                    clean = re.sub(r'\D','', part.strip())
+                    if 7 <= len(clean) <= 15:
+                        number = clean; break
+            # 3) نص خام
+            if not number:
+                clean_all = re.sub(r'\D','', raw_text)
+                if 7 <= len(clean_all) <= 15:
+                    number = clean_all
+            if not number: return None
+            clean_num = re.sub(r'\D','', str(number))
+            real_iso = iso or guess_iso(clean_num) or iso
+            return {"number": clean_num,
+                    "country": iso_name(real_iso, "en") or real_iso.upper(),
+                    "iso": real_iso, "operator": "Mino"}
+        except Exception as e:
+            logging.warning(f"Mino get_number error: {e}")
+        return None
+
+    def fetch_otps(self):
+        new = []
+        try:
+            data = self._get("/success_otp")
+            if not data: return new
+            otps = data.get("otps") or data.get("data") or data.get("results") or []
+            if isinstance(otps, dict): otps = otps.get("items") or []
+            for otp in otps:
+                if not isinstance(otp, dict): continue
+                number  = otp.get("number") or otp.get("phone") or ""
+                message = otp.get("message") or otp.get("sms") or otp.get("text") or ""
+                code    = otp.get("otp_code") or otp.get("otp") or otp.get("code") or ""
+                if not (number and code): continue
+                uid = f"mino:{number}:{code}:{otp.get('id') or otp.get('timestamp') or ''}"
+                if uid in self._seen_ids: continue
+                self._seen_ids.add(uid)
+                new.append({"id": uid, "number": str(number), "code": str(code),
+                            "otp": str(code), "message": message,
+                            "date": otp.get("timestamp") or "",
+                            "service": otp.get("service") or "",
+                            "country": otp.get("country") or ""})
+        except Exception as e:
+            logging.warning(f"Mino fetch_otps error: {e}")
+        return new
+
+    def check(self, number):
+        return self._get("/check", {"number": number})
+
+MINO = MinoSource(MINO_API_KEY, MINO_BASE_URL)
+
+# ══════════════════ Login / health status ══════════════════
+def zenex_status():
+    try:
+        r = requests.get(f"{ZENEX_URL}/active-ranges", headers=zx_headers(), timeout=15)
+        if r.ok: return True, f"✅ ناجح ({len((r.json().get('data') or {}).get('active_ranges') or [])} رينج نشط)"
+        return False, f"❌ فشل (HTTP {r.status_code})"
+    except Exception as e: return False, f"❌ خطأ: {e}"
+
+def zyron_status():
+    if not (ZYRON_HOST and ZYRON_USER and ZYRON_PASS): return False, "⚪ غير مُعدّ"
+    global _ZY_SESS, _ZY_TS
+    _ZY_SESS, _ZY_TS = None, 0
+    s = zyron_login()
+    return (True, "✅ ناجح") if s else (False, "❌ فشل تسجيل الدخول")
+
+def np_status():
+    ok, msg = NP.status()
+    try: np_ranges = len(NP.ranges())
+    except: np_ranges = 0
+    return ok, msg, np_ranges
+
+def mino_status():
+    try:
+        numbers = MINO.ranges()
+        return (True, f"✅ ناجح ({len(numbers)} رقم)") if numbers is not None else (False, "❌ فشل")
+    except Exception as e: return False, f"❌ خطأ: {e}"
+
+def logins_report():
+    zx_ok, zx_msg = zenex_status()
+    zy_ok, zy_msg = zyron_status()
+    np_ok, np_msg, np_ranges = np_status()
+    mino_ok, mino_msg = mino_status()
+    return (
+        "🔐 <b>حالة الدخول للمواقع</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🟢 <b>Zenex</b>: {zx_msg}\n"
+        f"🔵 <b>ZYRON</b>: {zy_msg}\n"
+        f"🟣 <b>NumberPanel</b>: {np_msg} ({np_ranges} رينج)\n"
+        f"🔴 <b>Mino</b>: {mino_msg}\n"
+        "━━━━━━━━━━━━━━━━━━━━━"
+    )
+
+# ══════════════════ Unified ranges ══════════════════
+def all_ranges():
+    base = []
+    # 1. Zenex
+    if STATE.get("provider") == "zenex":
+        base.extend(zx_active_ranges())
+    # 2. Custom
+    for sid, arr in STATE.get("custom", {}).items():
+        for r in arr: base.append({**r, "service": sid})
+    # 3. NumberPanel
+    try:
+        base.extend(NP.ranges())
+    except Exception: pass
+    # 4. Mino
+    try:
+        base.extend(MINO.ranges())
+    except Exception: pass
+    return base
+
+def ranges_for_service(sid):
+    svc = SERVICE_MAP.get(sid)
+    if not svc: return []
+    keys = svc["keys"]
+    out = []
+    for r in all_ranges():
+        s = str(r.get("service") or "").lower()
+        if any(k in s for k in keys):
+            iso = (r.get("iso") or "").lower() or guess_iso(str(r.get("range","")))
+            out.append({"range": r["range"], "iso": iso, "hits": int(r.get("hits") or 0)})
+    for name, c in COMBOS.get(sid, {}).items():
+        remaining = [n for n in c.get("numbers", []) if n not in c.get("used", [])]
+        if remaining:
+            iso = c.get("iso") or guess_iso(remaining[0])
+            out.append({"range": f"combo::{sid}::{name}", "iso": iso, "hits": len(remaining), "combo": name})
+    return out
+
+def _gkey_of(r):
+    # Unique group key: allows two ranges with same ISO (e.g. Guinea 1 / Guinea 2)
+    gid = r.get("gid")
+    if gid: return f"{r.get('iso') or '??'}#{gid}"
+    return r.get("iso") or "??"
+
+def countries_for_service(sid):
+    groups = defaultdict(lambda: {"iso":"","gkey":"","label":"","country":"","ranges":[],"hits":0})
+    for r in ranges_for_service(sid):
+        gk = _gkey_of(r)
+        g = groups[gk]
+        g["gkey"] = gk
+        g["iso"] = r.get("iso") or ""
+        g["label"] = r.get("gid") or ""
+        if not g["country"]: g["country"] = r.get("country") or ""
+        g["ranges"].append(r); g["hits"] += r["hits"]
+    return sorted(groups.values(), key=lambda x: (-x["hits"], x["iso"], x["label"]))
+
+def best_range(sid, gkey):
+    for c in countries_for_service(sid):
+        if c["gkey"] == gkey or c["iso"] == gkey:  # backward compatible
+            rs = sorted(c["ranges"], key=lambda r: -r["hits"])
+            return rs[0] if rs else None
+    return None
+
+def reserve_number(rng):
+    if rng.startswith("combo::"):
+        _, sid, name = rng.split("::", 2)
+        c = COMBOS.get(sid, {}).get(name)
+        if not c: return None
+        rem = [n for n in c["numbers"] if n not in c.get("used", [])]
+        if not rem: return None
+        num = rem[0]
+        return {"number": num, "country": name, "iso": c.get("iso") or guess_iso(num), "operator": "combo", "combo": (sid, name)}
+    if rng.startswith("np::"):
+        return NP.get_number(rng)
+    if rng.startswith("mino::"):
+        return MINO.get_number(rng)
+    return zx_get_number(rng)
+
+def cancel_number(number): zx_cancel(number)
+
+def consume_combo(sid, name, number):
+    c = COMBOS.get(sid, {}).get(name)
+    if not c: return
+    c.setdefault("used", []).append(number)
+    c["numbers"] = [n for n in c["numbers"] if n != number]
+    save_combos()
+
+def find_otp_for(number, seen):
+    tail = re.sub(r"\D", "", number)[-9:]
+    for msg in zx_fetch_otps():
+        mid = str(msg.get("nid") or msg.get("id") or msg.get("created_at") or "")
+        if mid in seen: continue
+        digits = re.sub(r"\D", "", str(msg.get("number") or ""))
+        if not digits.endswith(tail): continue
+        raw = str(msg.get("otp") or "")
+        m = re.search(r"\b(\d{4,8})\b", raw)
+        return {"id": mid, "code": m.group(1) if m else raw, "raw": raw}
+    for source, name in [(NP, "NP"), (MINO, "Mino")]:
+        try:
+            for m in source.fetch_otps():
+                if m["id"] in seen: continue
+                digits = re.sub(r"\D", "", m["number"])
+                if not digits.endswith(tail): continue
+                raw = m["otp"]
+                mm = re.search(r"\b(\d{3}[-\s]?\d{3,4}|\d{4,8})\b", raw)
+                code = re.sub(r"\D", "", mm.group(1)) if mm else raw
+                return {"id": m["id"], "code": code, "raw": raw}
+        except Exception: pass
+    return None
+
+# ══════════════════ Subscription gate ══════════════════
+def required_chats():
+    chats = list(REQUIRED_CHANNELS)
+    if FORCE_JOIN_GROUP and OTP_GROUP_ID:
+        chats.append({"id": OTP_GROUP_ID, "title": OTP_GROUP_TITLE, "url": OTP_GROUP_LINK or None, "is_group": True})
+    return chats
+
+async def check_subscription(ctx, uid):
+    missing = []
+    for ch in required_chats():
+        try:
+            m = await ctx.bot.get_chat_member(ch["id"], uid)
+            if m.status in ("left", "kicked"): missing.append(ch)
+        except Exception: missing.append(ch)
+    return (len(missing) == 0), missing
+
+def _chat_url(ch):
+    if ch.get("url"): return ch["url"]
+    cid = ch["id"]
+    if isinstance(cid, str) and cid.startswith("@"): return f"https://t.me/{cid.lstrip('@')}"
+    return None
+
+def sub_kb(missing, lang):
+    rows = []
+    for ch in missing:
+        url = _chat_url(ch)
+        icon = "🔔" if ch.get("is_group") else "📢"
+        rows.append([InlineKeyboardButton(f"{icon} {ch['title']}", url=url or None, callback_data="noop" if not url else None)])
+    rows.append([InlineKeyboardButton(tr(lang, "check_sub"), callback_data="sub:check", style="primary")])
+    return InlineKeyboardMarkup(rows)
+
+async def enforce_sub(ctx, chat_id, uid, lang):
+    ok, missing = await check_subscription(ctx, uid)
+    if ok: return True
+    await ctx.bot.send_message(chat_id, tr(lang, "must_join"), reply_markup=sub_kb(missing, lang))
+    return False
+
+def bot_url(): return f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else None
+def group_url(): return OTP_GROUP_LINK or None
+def channel_url():
+    try:
+        for c in REQUIRED_CHANNELS:
+            u = c.get("url")
+            if u: return u
+    except Exception: pass
+    return None
+
+# اسم البوت المعروض في رسائل الرمز (يمكن تغييره بحرّية)
+BOT_BRAND = "OTP ABO IBRAHIM"
+BRAND_FLAG = "🏴"
+
+# ══════════════════ Keyboards ══════════════════
 def _kb_btn(text, style=None):
+    """KeyboardButton مع style (يعمل في الفورك)، آمن لو المكتبة لا تدعم style."""
     try:
         return KeyboardButton(text, style=style) if style else KeyboardButton(text)
     except TypeError:
         return KeyboardButton(text)
 
-def IB(text, style=None, **kw):
-    try:
-        return InlineKeyboardButton(text, style=style, **kw) if style else InlineKeyboardButton(text, **kw)
-    except TypeError:
-        return InlineKeyboardButton(text, **kw)
-
-# ══════════════════ MARQUEE (شريط متحرك للنص الطويل) ══════════════════
-GAP = "   •   "
-
-# مخزن الشرائط النشطة: (chat_id, message_id) -> {"build":fn, "off":int, "tok":int}
-MARQ = {}
-VIEW_TOK = {}      # chat_id -> رقم العرض الحالي (لإبطال الشرائط القديمة)
-
-def marquee_mode():
-    m = S("marquee", "scroll")
-    return m if m in ("scroll", "wrap", "off") else "scroll"
-
-def new_view(chat_id):
-    """يفتح عرضاً جديداً في المحادثة ويبطل كل الشرائط السابقة (يمنع الجليتش)."""
-    VIEW_TOK[chat_id] = VIEW_TOK.get(chat_id, 0) + 1
-    return VIEW_TOK[chat_id]
-
-def stop_marquee(ctx, chat_id, message_id=None):
-    """يوقف شرائط المحادثة (أو رسالة محددة) فوراً."""
-    try:
-        for key in list(MARQ.keys()):
-            if key[0] == chat_id and (message_id is None or key[1] == message_id):
-                MARQ.pop(key, None)
-        jq = getattr(ctx, "job_queue", None)
-        if jq is None:
-            return
-        for j in jq.jobs():
-            d = getattr(j, "data", None) or {}
-            k = d.get("key")
-            if k and k[0] == chat_id and (message_id is None or k[1] == message_id):
-                j.schedule_removal()
-    except Exception as e:
-        log.debug("stop_marquee: %s", e)
-
-def wrap_label(text, width=MARQUEE_WIDTH):
-    """يعرض النص كاملاً: السطر الأول عريض والبقية أسطر صغيرة تحته."""
-    t = str(text).replace("\n", " ").strip()
-    words, lines, cur = t.split(), [], ""
-    for w in words:
-        if not cur:
-            cur = w
-        elif len(cur) + 1 + len(w) <= width:
-            cur += " " + w
-        else:
-            lines.append(cur); cur = w
-        while len(cur) > width:
-            lines.append(cur[:width]); cur = cur[width:]
-    if cur:
-        lines.append(cur)
-    lines = lines[:WRAP_MAX_LINES] or [t[:width]]
-    head = make_bold_unicode(lines[0])
-    rest = "\n".join(lines[1:])
-    return head + ("\n" + rest if rest else "")
-
-def scroll(text, offset=0, width=MARQUEE_WIDTH):
-    """يعيد جزءاً من النص يتحرك كالشريط إن كان أطول من العرض المسموح."""
-    t = str(text).replace("\n", " ").strip()
-    if len(t) <= width:
-        return t
-    s2 = t + GAP
-    off = offset % len(s2)
-    return (s2 + s2)[off:off + width]
-
-def btn(text, off=0, width=MARQUEE_WIDTH):
-    """نص الزر النهائي حسب وضع العرض الذي اختاره الأدمن."""
-    t = str(text).replace("\n", " ").strip()
-    mode = marquee_mode()
-    if len(t) <= width:
-        return make_bold_unicode(t)
-    if mode == "wrap":
-        return wrap_label(t, width)
-    if mode == "off":
-        return make_bold_unicode(t[:width - 1] + "…")
-    return make_bold_unicode(scroll(t, off, width))
-
-def is_long(text, width=MARQUEE_WIDTH):
-    return len(str(text).replace("\n", " ").strip()) > width
-
-async def _marq_tick(ctx: ContextTypes.DEFAULT_TYPE):
-    key = ctx.job.data["key"]
-    st = MARQ.get(key)
-    if not st:
-        ctx.job.schedule_removal(); return
-    # إبطال إن كان المستخدم انتقل لعرض آخر (سبب الجليتش سابقاً)
-    if st.get("tok") != VIEW_TOK.get(key[0]):
-        MARQ.pop(key, None); ctx.job.schedule_removal(); return
-    if marquee_mode() != "scroll":
-        MARQ.pop(key, None); ctx.job.schedule_removal(); return
-    st["off"] += 1
-    if st["off"] > MARQUEE_TICKS:
-        MARQ.pop(key, None); ctx.job.schedule_removal(); return
-    try:
-        await ctx.bot.edit_message_reply_markup(
-            chat_id=key[0], message_id=key[1], reply_markup=st["build"](st["off"]))
-    except Exception:
-        MARQ.pop(key, None); ctx.job.schedule_removal()
-
-def start_marquee(ctx, message, build, texts):
-    """يشغّل حركة النص إذا كان الوضع «شريط متحرك» وهناك عنوان طويل."""
-    try:
-        if not message or marquee_mode() != "scroll":
-            return
-        if not any(is_long(t) for t in texts):
-            return
-        jq = getattr(ctx, "job_queue", None)
-        if jq is None:
-            return
-        chat_id = message.chat_id
-        stop_marquee(ctx, chat_id)                 # شريط واحد فقط لكل محادثة
-        tok = VIEW_TOK.get(chat_id) or new_view(chat_id)
-        key = (chat_id, message.message_id)
-        MARQ[key] = {"build": build, "off": 0, "tok": tok}
-        jq.run_repeating(_marq_tick, interval=MARQUEE_EVERY, first=MARQUEE_EVERY,
-                         data={"key": key}, name=f"marq:{key[0]}:{key[1]}")
-    except Exception as e:
-        log.debug("marquee skip: %s", e)
-
-# ══════════════════ STORAGE ══════════════════
-DEFAULT_DATA = {
-    "brand": "المؤسسة الإعلامية",
-    "flag": "🏴",
-    "welcome": "السلام عليكم ورحمة الله وبركاته\nحيّاكم الله في أرشيف المؤسسة الإعلامية\nاختر القسم الذي تريده من الأزرار بالأسفل.",
-    "about": "أرشيف رقمي يضم الإصدارات والأناشيد والكتب والإنفوغرافيك.",
-    "contact": "للتواصل: @username",
-    "labels": {
-        "sections": "📚 الأقسام",
-        "about": "ℹ️ حول",
-        "contact": "📞 تواصل",
-        "search": "🔎 بحث",
-        "admin": "🛠️ لوحة الأدمن",
-        "back": "🔙 رجوع",
-        "fav": "⭐ المفضلة",
-        "new": "🆕 الأحدث",
-        "top": "🔥 الأكثر طلباً",
-        "random": "🎲 عشوائي",
-        "cart": "🧺 السلة",
-        "tags": "🏷 الوسوم",
-        "adv": "🔍 بحث متقدم",
-        "leader": "🎖 المتصدرون",
-        "hist": "🕓 آخر ما شاهدت",
-        "feedback": "✉️ مراسلة الإدارة",
-        "dltop": "🏆 الأكثر تحميلاً",
-    },
-    "sections": [
-        {"id": "s1", "title": "🎬 إصدارات",   "desc": "", "items": []},
-        {"id": "s2", "title": "🎙 أناشيد",    "desc": "", "items": []},
-        {"id": "s3", "title": "📚 كتب",       "desc": "", "items": []},
-        {"id": "s4", "title": "📊 إنفوغرافيك", "desc": "", "items": []},
-    ],
-    "admins": [],                 # أدمن إضافيون يُضافون من داخل البوت
-    "settings": {
-        "maintenance": False,     # وضع الصيانة
-        "force_sub": "",          # @channel للاشتراك الإجباري
-        "protect": False,         # منع إعادة التوجيه/الحفظ للمحتوى
-        "marquee": "scroll",      # scroll | wrap | off  (وضع عرض العناوين الطويلة)
-        "notify_new": False,      # إشعار المستخدمين بالجديد تلقائياً
-        "daily_limit": 0,         # حد التنزيل اليومي لكل مستخدم (0 = بلا حد)
-        "banner": "",             # شريط إعلان أعلى القوائم
-    },
-    "trash": [],                  # سلة المحذوفات
-    "logs": [],                   # سجل نشاط
-    "seq": 100,
-}
-
-def _load(path, default):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        if isinstance(default, dict):
-            for k, v in default.items():
-                d.setdefault(k, v)
-            for k, v in default.get("labels", {}).items():
-                d["labels"].setdefault(k, v)
-            for k, v in default.get("settings", {}).items():
-                d["settings"].setdefault(k, v)
-        return d
-    except Exception:
-        return json.loads(json.dumps(default))
-
-DATA  = _load(DATA_FILE, DEFAULT_DATA)
-USERS = _load(USERS_FILE, {})
-
-def _atomic_write(path, obj):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
-
-DIRTY = {"data": False, "users": False}
-
-def save_data():
-    _atomic_write(DATA_FILE, DATA)
-    DIRTY["data"] = True          # ليُرسل في النسخة الاحتياطية القادمة
-
-def save_users():
-    _atomic_write(USERS_FILE, USERS)
-    DIRTY["users"] = True
-
-def add_log(txt):
-    DATA.setdefault("logs", []).append({"t": int(time.time()), "x": txt[:200]})
-    DATA["logs"] = DATA["logs"][-300:]
-    save_data()
-
-def next_id(prefix):
-    DATA["seq"] = int(DATA.get("seq", 100)) + 1
-    save_data()
-    return f"{prefix}{DATA['seq']}"
-
-def L(key):
-    return DATA["labels"].get(key, key)
-
-def is_admin(uid):
-    return uid in ADMIN_IDS or uid in DATA.get("admins", [])
-
-def S(key, default=None):
-    return DATA.get("settings", {}).get(key, default)
-
-def note_user(tgu):
-    u = USERS.get(str(tgu.id))
-    if not u:
-        u = {"id": tgu.id, "name": tgu.first_name or "", "username": tgu.username or "",
-             "banned": False, "joined": int(time.time()), "fav": [], "hits": 0}
-        USERS[str(tgu.id)] = u
-        save_users()
-    u.setdefault("fav", []); u.setdefault("hits", 0)
-    u["last"] = int(time.time())
-    return u
-
-def get_section(sid):
-    for s in DATA["sections"]:
-        if s["id"] == sid:
-            return s
-    return None
-
-def get_item(sec, iid):
-    for it in sec["items"]:
-        if it["id"] == iid:
-            return it
-    return None
-
-def find_item(iid):
-    for s in DATA["sections"]:
-        for it in s["items"]:
-            if it["id"] == iid:
-                return s, it
-    return None, None
-
-def all_items():
-    return [(s, it) for s in DATA["sections"] for it in s["items"]]
-
-# ══════════════════ NAV / ANTI-SPAM ══════════════════
-LAST_ACT = {}
-def rate_ok(uid, gap=0.5):
-    now = time.time()
-    if now - LAST_ACT.get(uid, 0) < gap:
-        return False
-    LAST_ACT[uid] = now
-    return True
-
-# ══════════════════ TYPES ══════════════════
-TYPE_EMOJI = {
-    "video": "🎬", "audio": "🎧", "voice": "🎙", "photo": "🖼",
-    "document": "📄", "animation": "🎞", "text": "📝", "pack": "🗂",
-}
-
-def detect_media(msg):
-    if msg.video:     return "video", msg.video.file_id, msg.caption or (msg.video.file_name or "فيديو")
-    if msg.audio:     return "audio", msg.audio.file_id, msg.caption or (msg.audio.title or msg.audio.file_name or "ملف صوتي")
-    if msg.voice:     return "voice", msg.voice.file_id, msg.caption or "بصمة صوتية"
-    if msg.photo:     return "photo", msg.photo[-1].file_id, msg.caption or "صورة"
-    if msg.animation: return "animation", msg.animation.file_id, msg.caption or "صورة متحركة"
-    if msg.document:  return "document", msg.document.file_id, msg.caption or (msg.document.file_name or "ملف")
-    if msg.text:      return "text", None, msg.text
-    return None, None, None
-
-async def send_media(bot, chat_id, t, fid, cap, reply_markup=None):
-    kw = dict(caption=cap, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-    if S("protect"):
-        kw["protect_content"] = True
-    if   t == "video":     await bot.send_video(chat_id, fid, **kw)
-    elif t == "audio":     await bot.send_audio(chat_id, fid, **kw)
-    elif t == "voice":     await bot.send_voice(chat_id, fid, **kw)
-    elif t == "photo":     await bot.send_photo(chat_id, fid, **kw)
-    elif t == "animation": await bot.send_animation(chat_id, fid, **kw)
-    elif t == "document":  await bot.send_document(chat_id, fid, **kw)
-    else:
-        await bot.send_message(chat_id, cap, parse_mode=ParseMode.HTML, reply_markup=reply_markup,
-                               protect_content=bool(S("protect")))
-
-def share_link(iid):
-    return f"https://t.me/{BOT_USERNAME}?start=it_{iid}" if BOT_USERNAME else ""
-
-async def send_item(bot, chat_id, item, reply_markup=None):
-    t, fid = item["type"], item.get("file_id")
-    cap = f"{TYPE_EMOJI.get(t,'📎')} <b>{make_bold_unicode(item.get('title',''))}</b>"
-    if item.get("caption"):
-        cap += f"\n{LINE}\n{item['caption']}"
-    lnk = share_link(item["id"])
-    if lnk:
-        cap += f"\n{LINE}\n🔗 {lnk}"
-    item["views"] = int(item.get("views", 0)) + 1
-    save_data()
-    await send_media(bot, chat_id, t, fid, cap, reply_markup)
-
-async def send_pack_file(bot, chat_id, item, f, reply_markup=None):
-    cap = (f"{TYPE_EMOJI.get(f.get('type'),'📎')} <b>{make_bold_unicode(f.get('label',''))}</b>\n"
-           f"{LINE}\n🗂 {make_bold_unicode(item.get('title',''))}")
-    item["views"] = int(item.get("views", 0)) + 1
-    save_data()
-    await send_media(bot, chat_id, f.get("type"), f.get("file_id"), cap, reply_markup)
-
-def _has_media(m):
-    return bool(m and (m.photo or m.video or m.document or m.audio or m.animation or m.voice))
-
-async def safe_edit(q, text, parse_mode=ParseMode.HTML, reply_markup=None):
-    """تعديل آمن يعمل مع النصوص والوسائط — يعيد الرسالة الناتجة."""
-    m = q.message
-    if m is not None and not _has_media(m):
-        try:
-            await q.edit_message_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
-            return m
-        except Exception as e:
-            log.debug("safe_edit fallback: %s", e)
-    try:
-        await m.delete()
-    except Exception:
-        pass
-    try:
-        return await q.get_bot().send_message(m.chat_id, text, parse_mode=parse_mode, reply_markup=reply_markup)
-    except Exception as e:
-        log.warning("safe_edit send failed: %s", e)
-        return None
-
-# ══════════════════ KEYBOARDS ══════════════════
-def main_kb(uid):
-    rows = [[_kb_btn(make_bold_unicode(L("sections")), style="danger")]]
+def main_kb(lang, is_admin):
+    rows = [[_kb_btn(make_bold_unicode(f"📞 {tr(lang, 'get_number')}"), style="danger")]]
     rows.append([
-        _kb_btn(make_bold_unicode(L("new")), style="primary"),
-        _kb_btn(make_bold_unicode(L("top")), style="primary"),
-        _kb_btn(make_bold_unicode(L("random")), style="primary"),
+        _kb_btn(make_bold_unicode(tr(lang, "repeat_last")), style="primary"),
+        _kb_btn(make_bold_unicode(tr(lang, "history")), style="primary"),
     ])
-    rows.append([
-        _kb_btn(make_bold_unicode(L("fav")), style="success"),
-        _kb_btn(make_bold_unicode(L("search")), style="success"),
-    ])
-    rows.append([
-        _kb_btn(make_bold_unicode(L("cart")), style="primary"),
-        _kb_btn(make_bold_unicode(L("tags")), style="primary"),
-        _kb_btn(make_bold_unicode(L("adv")), style="primary"),
-    ])
-    rows.append([
-        _kb_btn(make_bold_unicode(L("dltop")), style="success"),
-        _kb_btn(make_bold_unicode(L("leader")), style="success"),
-        _kb_btn(make_bold_unicode(L("hist")), style="success"),
-    ])
-    rows.append([_kb_btn(make_bold_unicode(L("feedback")), style="primary")])
-    row = [
-        _kb_btn(make_bold_unicode(L("about")), style="primary"),
-        _kb_btn(make_bold_unicode(L("contact")), style="primary"),
-    ]
-    if is_admin(uid):
-        row.append(_kb_btn(make_bold_unicode(L("admin")), style="danger"))
-    rows.append(row)
+    row3 = [_kb_btn(make_bold_unicode(f"🌐 {tr(lang, 'language')}"), style="success")]
+    if is_admin:
+        row3.append(_kb_btn(make_bold_unicode(f"🛠️ {tr(lang, 'admin_panel')}"), style="success"))
+    rows.append(row3)
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
-def sections_kb(off=0, uid=None):
+def services_kb(lang):
     rows = []
-    for s in visible_sections(uid):
-        n = len(pub_items(s)) if not is_admin(uid or 0) else len(s["items"])
-        label = f"{s['title']}  •  {n}" + ("  🔐" if s.get("pw") else "") + ("  🙈" if s.get("hidden") else "")
-        rows.append([IB(btn(label, off), callback_data=f"sec:{s['id']}:0", style="primary")])
-    if not rows:
-        rows.append([IB(make_bold_unicode("لا توجد أقسام بعد"), callback_data="noop")])
+    for sid, s in SERVICE_MAP.items():
+        if sid in STATE.get("disabled", []): continue
+        rows.append([InlineKeyboardButton(
+            make_bold_unicode(f"{s['emoji']} {svc_name(sid, lang)}"),
+            callback_data=f"svc:{sid}",
+            style="primary"
+        )])
     return InlineKeyboardMarkup(rows)
 
-def item_label(it):
-    extra = f"  •  {len(it.get('files', []))} ملفات" if it["type"] == "pack" else ""
-    pin = "📌 " if it.get("pin") else ""
-    return f"{pin}{TYPE_EMOJI.get(it['type'],'📎')} {it['title']}{extra}"
-
-def visible_sections(uid=None):
-    if uid is not None and is_admin(uid):
-        return DATA["sections"]
-    return [s for s in DATA["sections"] if not s.get("hidden")]
-
-def pub_items(sec):
-    """المواد الظاهرة للمستخدم: غير مخفية وحان وقت نشرها."""
-    now = int(time.time())
-    return [it for it in sorted_items(sec)
-            if not it.get("hidden") and int(it.get("publish_at") or 0) <= now]
-
-def item_rating(it):
-    r = it.get("rate") or {}
-    if not r:
-        return 0.0, 0
-    vals = [int(v) for v in r.values()]
-    return round(sum(vals) / len(vals), 1), len(vals)
-
-def note_dl(it):
-    it["dl"] = int(it.get("dl", 0)) + 1
-    it["dlog"] = ([*(it.get("dlog") or []), int(time.time())])[-300:]
-    save_data()
-
-def dl_week(it):
-    wk = int(time.time()) - 7 * 86400
-    return sum(1 for t in (it.get("dlog") or []) if t > wk)
-
-def dl_ok(uid):
-    lim = int(S("daily_limit", 0) or 0)
-    if lim <= 0 or is_admin(uid):
-        return True
-    u = USERS.get(str(uid)) or {}
-    today = time.strftime("%Y-%m-%d")
-    if u.get("dl_day") != today:
-        u["dl_day"], u["dl_cnt"] = today, 0
-    if int(u.get("dl_cnt", 0)) >= lim:
-        return False
-    u["dl_cnt"] = int(u.get("dl_cnt", 0)) + 1
-    save_users()
-    return True
-
-def award(uid, pts=1):
-    u = USERS.get(str(uid))
-    if not u:
-        return
-    u["points"] = int(u.get("points", 0)) + pts
-    save_users()
-
-def level_of(points):
-    for i, need in enumerate([0, 10, 30, 60, 120, 250, 500], start=1):
-        if points < need:
-            return max(1, i - 1)
-    return 7
-
-def note_hist(uid, iid):
-    u = USERS.get(str(uid))
-    if not u:
-        return
-    h = [x for x in (u.get("hist") or []) if x != iid]
-    h.insert(0, iid)
-    u["hist"] = h[:15]
-    save_users()
-
-def all_tags():
-    tags = {}
-    for s, it in all_items():
-        for t in (it.get("tags") or []):
-            tags[t] = tags.get(t, 0) + 1
-    return dict(sorted(tags.items(), key=lambda kv: -kv[1]))
-
-def sorted_items(sec):
-    return sorted(sec["items"], key=lambda i: (0 if i.get("pin") else 1, -int(i.get("ts", 0))))
-
-def items_kb(sec, page, off=0):
-    items = pub_items(sec)
-    pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
+def countries_kb(sid, lang, page=0):
+    countries = countries_for_service(sid)
+    if not countries: return None
+    per_page = 10
+    pages = max(1, (len(countries) + per_page - 1) // per_page)
     page = max(0, min(page, pages - 1))
+    sl = countries[page*per_page:(page+1)*per_page]
     rows = []
-    for it in items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
-        rows.append([IB(btn(item_label(it), off),
-                        callback_data=f"itm:{sec['id']}:{it['id']}:{page}", style="primary")])
+    for idx, c in enumerate(sl):
+        iso = c["iso"]
+        label = c.get("label") or ""
+        country_display_name = (c.get("country") or "").strip()
+        if not country_display_name:
+            country_display_name = iso_name(iso, lang) or (iso.upper() if iso else "Unknown")
+        if label and label not in country_display_name:
+            country_display_name = f"{country_display_name} {label}"
+        rows.append([InlineKeyboardButton(
+            make_bold_unicode(f"{flag(iso)} {country_display_name} ✅ {c['hits']}"),
+            callback_data=f"co:{sid}:{c['gkey']}",
+            style="primary"
+        )])
     nav = []
-    if page > 0:            nav.append(IB("◀️", callback_data=f"sec:{sec['id']}:{page-1}", style="primary"))
-    nav.append(IB(f"{page+1}/{pages}", callback_data="noop"))
-    if page < pages - 1:    nav.append(IB("▶️", callback_data=f"sec:{sec['id']}:{page+1}", style="primary"))
-    if len(nav) > 1: rows.append(nav)
-    rows.append([IB(make_bold_unicode("🔎 بحث داخل القسم"), callback_data=f"ssrch:{sec['id']}", style="success")])
-    rows.append([IB(make_bold_unicode(L("back")), callback_data="sections", style="danger")])
+    if page > 0: nav.append(InlineKeyboardButton("◀️", callback_data=f"cop:{sid}:{page-1}", style="primary"))
+    nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="noop"))
+    if page < pages - 1: nav.append(InlineKeyboardButton("▶️", callback_data=f"cop:{sid}:{page+1}", style="primary"))
+    if nav: rows.append(nav)
+    rows.append([InlineKeyboardButton("🔄", callback_data=f"cop:{sid}:{page}", style="primary"),
+                 InlineKeyboardButton(make_bold_unicode(tr(lang, "back")), callback_data="services", style="danger")])
     return InlineKeyboardMarkup(rows)
 
-def items_texts(sec, page):
-    items = pub_items(sec)
-    return [item_label(it) for it in items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]]
-
-def item_kb(sid, page, uid, iid):
-    fav = iid in USERS.get(str(uid), {}).get("fav", [])
-    incart = iid in (USERS.get(str(uid), {}).get("cart") or [])
-    _s, _it = find_item(iid)
-    avg, cnt = item_rating(_it) if _it else (0, 0)
-    rows = [[
-        IB(make_bold_unicode("💔 إزالة من المفضلة" if fav else "⭐ أضف للمفضلة"),
-           callback_data=f"fav:{iid}", style="success"),
-        IB(make_bold_unicode("🧺 إزالة من السلة" if incart else "🧺 أضف للسلة"),
-           callback_data=f"cart:{iid}", style="primary"),
-    ]]
-    rows.append([IB(make_bold_unicode(f"⭐ التقييم {avg}/5 ({cnt})"), callback_data="noop", style="primary")])
-    rows.append([IB(str(n) + "⭐", callback_data=f"rate:{iid}:{n}", style="success") for n in range(1, 6)])
-    rows.append([IB(make_bold_unicode("🔁 مواد مشابهة"), callback_data=f"sim:{sid}:{iid}", style="primary"),
-                 IB(make_bold_unicode("🔗 مشاركة"), callback_data=f"shr:{iid}", style="primary")])
-    if is_admin(uid):
-        rows.append([
-            IB(make_bold_unicode("📌 تثبيت/إلغاء"), callback_data=f"pin:{sid}:{iid}", style="primary"),
-            IB(make_bold_unicode("🗑 حذف"), callback_data=f"adm:delitem:{sid}:{iid}", style="danger"),
-        ])
-    rows.append([IB(make_bold_unicode(L("back")), callback_data=f"sec:{sid}:{page}", style="danger")])
+def number_kb(sid, iso, number, lang):
+    rows = [
+        [InlineKeyboardButton(make_bold_unicode(tr(lang, "new_number")), callback_data=f"new:{sid}:{iso}", style="success")],
+        [InlineKeyboardButton(make_bold_unicode(tr(lang, "change_country")), callback_data=f"svc:{sid}", style="primary"),
+         InlineKeyboardButton(make_bold_unicode(tr(lang, "copy")), callback_data=f"cp:{number}", style="primary")],
+    ]
+    gu = group_url()
+    if gu: rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "goto_group")), url=gu, style="primary")])
+    rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "cancel_number")), callback_data=f"cxl:{number}:{sid}:{iso}", style="danger")])
+    rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "back")), callback_data="services", style="danger")])
     return InlineKeyboardMarkup(rows)
-
-def pack_kb(sec, item, page, uid, off=0):
-    rows = []
-    for idx, f in enumerate(item.get("files", [])):
-        lbl = f"{TYPE_EMOJI.get(f.get('type'),'📎')} {f.get('label','')}"
-        rows.append([IB(btn(lbl, off),
-                        callback_data=f"pf:{sec['id']}:{item['id']}:{idx}:{page}", style="primary")])
-    if not rows:
-        rows.append([IB(make_bold_unicode("لا توجد ملفات في هذه القائمة"), callback_data="noop")])
-    else:
-        rows.append([IB(make_bold_unicode("📥 إرسال كل الملفات"),
-                        callback_data=f"pall:{sec['id']}:{item['id']}:{page}", style="success")])
-    fav = item["id"] in USERS.get(str(uid), {}).get("fav", [])
-    incart = item["id"] in (USERS.get(str(uid), {}).get("cart") or [])
-    rows.append([IB(make_bold_unicode("💔 إزالة من المفضلة" if fav else "⭐ أضف للمفضلة"),
-                    callback_data=f"fav:{item['id']}", style="success"),
-                 IB(make_bold_unicode("🧺 إزالة من السلة" if incart else "🧺 أضف للسلة"),
-                    callback_data=f"cart:{item['id']}", style="primary")])
-    if is_admin(uid):
-        rows.append([IB(make_bold_unicode("➕ إضافة ملفات"), callback_data=f"padd:{sec['id']}:{item['id']}", style="success"),
-                     IB(make_bold_unicode("🧹 إدارة الملفات"), callback_data=f"pmng:{sec['id']}:{item['id']}", style="primary")])
-        rows.append([IB(make_bold_unicode("🖼 تعيين / تغيير الغلاف"), callback_data=f"pcov:{sec['id']}:{item['id']}", style="primary"),
-                     IB(make_bold_unicode("📌 تثبيت/إلغاء"), callback_data=f"pin:{sec['id']}:{item['id']}", style="primary")])
-    rows.append([IB(make_bold_unicode(L("back")), callback_data=f"sec:{sec['id']}:{page}", style="danger")])
-    return InlineKeyboardMarkup(rows)
-
-def pack_files_admin_kb(sec, item):
-    rows = []
-    for idx, f in enumerate(item.get("files", [])):
-        rows.append([
-            IB(make_bold_unicode(f"{TYPE_EMOJI.get(f.get('type'),'📎')} {str(f.get('label',''))[:28]}"), callback_data="noop"),
-            IB("🔼", callback_data=f"pmv:{sec['id']}:{item['id']}:{idx}:up", style="success"),
-            IB("🔽", callback_data=f"pmv:{sec['id']}:{item['id']}:{idx}:dn", style="primary"),
-            IB("✏️", callback_data=f"pren:{sec['id']}:{item['id']}:{idx}", style="primary"),
-            IB("🗑", callback_data=f"pdel:{sec['id']}:{item['id']}:{idx}", style="danger"),
-        ])
-    rows.append([IB(make_bold_unicode("➕ إضافة ملفات"), callback_data=f"padd:{sec['id']}:{item['id']}", style="success")])
-    rows.append([IB(make_bold_unicode(L("back")), callback_data=f"itm:{sec['id']}:{item['id']}:0", style="danger")])
-    return InlineKeyboardMarkup(rows)
-
-def pack_header(sec, item):
-    lnk = share_link(item["id"])
-    return (f"🗂 <b>{make_bold_unicode(item.get('title',''))}</b>\n{LINE}\n"
-            f"{item.get('caption') or 'اختر الجودة التي تريدها 👇'}\n"
-            f"📦 عدد الملفات: <b>{len(item.get('files', []))}</b> • 👁 <b>{item.get('views',0)}</b>\n"
-            + (f"🔗 {lnk}\n" if lnk else "") + LINE)
-
-async def show_pack(ctx, q, sec, it, page, uid):
-    head = pack_header(sec, it)
-    build = lambda off=0: pack_kb(sec, it, page, uid, off)
-    texts = [f.get("label", "") for f in it.get("files", [])]
-    cover = it.get("cover")
-    m = q.message
-    if cover:
-        try:
-            await m.delete()
-        except Exception:
-            pass
-        msg = await q.get_bot().send_photo(m.chat_id, cover, caption=head,
-                                           parse_mode=ParseMode.HTML, reply_markup=build(0))
-    else:
-        msg = await safe_edit(q, head, reply_markup=build(0))
-    start_marquee(ctx, msg, build, texts)
 
 def admin_kb():
-    st = DATA.get("settings", {})
-    rows = [
-        [IB(make_bold_unicode("📤 رفع محتوى لقسم"), callback_data="adm:upload", style="success")],
-        [IB(make_bold_unicode("🗂 إنشاء قائمة متعددة الملفات"), callback_data="adm:pack", style="success")],
-        [IB(make_bold_unicode("➕ إضافة قسم"), callback_data="adm:addsec", style="success"),
-         IB(make_bold_unicode("✏️ تسمية قسم"), callback_data="adm:rensec", style="primary")],
-        [IB(make_bold_unicode("🗑 حذف قسم"), callback_data="adm:delsec", style="danger"),
-         IB(make_bold_unicode("↕️ ترتيب الأقسام"), callback_data="adm:order", style="primary")],
-        [IB(make_bold_unicode("🧹 إدارة محتوى قسم"), callback_data="adm:manage", style="primary")],
-        [IB(make_bold_unicode("🏷 تعديل أسماء الأزرار"), callback_data="adm:labels", style="primary")],
-        [IB(make_bold_unicode("📝 نص الترحيب"), callback_data="adm:txt:welcome", style="primary"),
-         IB(make_bold_unicode("ℹ️ نص حول"), callback_data="adm:txt:about", style="primary")],
-        [IB(make_bold_unicode("📞 نص التواصل"), callback_data="adm:txt:contact", style="primary"),
-         IB(make_bold_unicode("🏴 اسم المؤسسة"), callback_data="adm:txt:brand", style="primary")],
-        [IB(make_bold_unicode("📣 إعلان للجميع"), callback_data="adm:bc", style="primary"),
-         IB(make_bold_unicode("👥 المستخدمون"), callback_data="adm:users", style="primary")],
-        [IB(make_bold_unicode("🚫 حظر / فك حظر"), callback_data="adm:ban", style="danger"),
-         IB(make_bold_unicode("📊 إحصائيات"), callback_data="adm:stats", style="primary")],
-        [IB(make_bold_unicode("💾 نسخة احتياطية الآن"), callback_data="adm:backup", style="success"),
-         IB(make_bold_unicode("♻️ استعادة نسخة"), callback_data="adm:restore", style="danger")],
-        [IB(make_bold_unicode("👑 إضافة أدمن"), callback_data="adm:addadmin", style="primary"),
-         IB(make_bold_unicode("🗒 سجل النشاط"), callback_data="adm:logs", style="primary")],
-        [IB(make_bold_unicode(("🔧 الصيانة: تعمل" if st.get("maintenance") else "🔧 الصيانة: متوقفة")),
-            callback_data="adm:tg:maintenance", style="danger"),
-         IB(make_bold_unicode(("🔒 الحماية: مفعّلة" if st.get("protect") else "🔓 الحماية: متوقفة")),
-            callback_data="adm:tg:protect", style="primary")],
-        [IB(make_bold_unicode("📢 الاشتراك الإجباري"), callback_data="adm:forcesub", style="primary")],
-        [IB(make_bold_unicode({"scroll": "🎞 العناوين: شريط متحرك", "wrap": "📃 العناوين: نص كامل",
-                               "off": "⏹ العناوين: بلا حركة"}[(st.get("marquee") or "scroll")]),
-            callback_data="adm:marq", style="success")],
-        [IB(make_bold_unicode("🔔 إشعار الجديد: يعمل" if st.get("notify_new") else "🔕 إشعار الجديد: متوقف"),
-            callback_data="adm:tg:notify_new", style="primary"),
-         IB(make_bold_unicode(f"🚦 حد التنزيل: {st.get('daily_limit', 0) or 'بلا حد'}"),
-            callback_data="adm:limit", style="primary")],
-        [IB(make_bold_unicode("📌 شريط الإعلان"), callback_data="adm:banner", style="primary"),
-         IB(make_bold_unicode("⚡ رفع مجمّع سريع"), callback_data="adm:bulk", style="success")],
-        [IB(make_bold_unicode("♻️ سلة المحذوفات"), callback_data="adm:trash", style="danger"),
-         IB(make_bold_unicode("🎖 المتصدرون"), callback_data="adm:leader", style="primary")],
-    ]
-    return InlineKeyboardMarkup(rows)
-
-def pick_section_kb(action):
-    rows = [[IB(make_bold_unicode(s["title"]), callback_data=f"pick:{action}:{s['id']}", style="primary")]
-            for s in DATA["sections"]]
-    rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="danger")])
-    return InlineKeyboardMarkup(rows)
-
-def labels_kb():
-    rows = [[IB(make_bold_unicode(f"{k} : {v}"), callback_data=f"lbl:{k}", style="primary")]
-            for k, v in DATA["labels"].items()]
-    rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="danger")])
-    return InlineKeyboardMarkup(rows)
-
-def order_kb():
-    rows = []
-    for s in DATA["sections"]:
-        rows.append([
-            IB("🔼", callback_data=f"mv:up:{s['id']}", style="success"),
-            IB(make_bold_unicode(s["title"]), callback_data="noop"),
-            IB("🔽", callback_data=f"mv:dn:{s['id']}", style="danger"),
-        ])
-    rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="danger")])
-    return InlineKeyboardMarkup(rows)
-
-def manage_items_kb(sec, page=0):
-    items = sorted_items(sec)
-    pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
-    page = max(0, min(page, pages - 1))
-    rows = []
-    for it in items[page * PAGE_SIZE:(page + 1) * PAGE_SIZE]:
-        rows.append([
-            IB(make_bold_unicode(f"{TYPE_EMOJI.get(it['type'],'📎')} {it['title'][:28]}"), callback_data="noop"),
-            IB("📌", callback_data=f"pin:{sec['id']}:{it['id']}", style="success"),
-            IB("✏️", callback_data=f"ren:{sec['id']}:{it['id']}", style="primary"),
-            IB("↔️", callback_data=f"mvitem:{sec['id']}:{it['id']}", style="primary"),
-            IB("🗑", callback_data=f"adm:delitem:{sec['id']}:{it['id']}", style="danger"),
-        ])
-        rows.append([
-            IB("🏷 وسوم", callback_data=f"tag:{sec['id']}:{it['id']}", style="primary"),
-            IB("🙈 إظهار" if it.get("hidden") else "🙈 إخفاء", callback_data=f"hid:{sec['id']}:{it['id']}", style="primary"),
-            IB("⏰ جدولة", callback_data=f"sch:{sec['id']}:{it['id']}", style="primary"),
-            IB("📑 نسخ", callback_data=f"cpitem:{sec['id']}:{it['id']}", style="success"),
-        ])
-    nav = []
-    if page > 0:         nav.append(IB("◀️", callback_data=f"mng:{sec['id']}:{page-1}", style="primary"))
-    nav.append(IB(f"{page+1}/{pages}", callback_data="noop"))
-    if page < pages - 1: nav.append(IB("▶️", callback_data=f"mng:{sec['id']}:{page+1}", style="primary"))
-    if len(nav) > 1: rows.append(nav)
-    rows.append([IB(make_bold_unicode("📄 تصدير قائمة القسم"), callback_data=f"mngexp:{sec['id']}", style="success"),
-                 IB(make_bold_unicode("📊 إحصائيات القسم"), callback_data=f"secst:{sec['id']}", style="primary")])
-    rows.append([IB(make_bold_unicode("🔐 قفل/فتح القسم"), callback_data=f"secpw:{sec['id']}", style="danger"),
-                 IB(make_bold_unicode("🙈 إخفاء/إظهار القسم"), callback_data=f"sechid:{sec['id']}", style="primary")])
-    rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="danger")])
-    return InlineKeyboardMarkup(rows)
-
-def results_kb(pairs, off=0, back="sections"):
-    rows = [[IB(btn(f"{TYPE_EMOJI.get(it['type'],'📎')} {it['title']} • {s['title']}", off),
-                callback_data=f"itm:{s['id']}:{it['id']}:0", style="primary")] for s, it in pairs]
-    if not rows:
-        rows.append([IB(make_bold_unicode("لا توجد نتائج"), callback_data="noop")])
-    rows.append([IB(make_bold_unicode(L("back")), callback_data=back, style="danger")])
-    return InlineKeyboardMarkup(rows)
-
-# ══════════════════ HEADERS ══════════════════
-def welcome_text():
-    return (f"{DATA.get('flag','🏴')} <b>{make_bold_unicode(DATA['brand'])}</b> {DATA.get('flag','🏴')}\n"
-            f"{LINE}\n{DATA['welcome']}\n{LINE}")
-
-def sections_header():
-    total = sum(len(s["items"]) for s in DATA["sections"])
-    ban = (S("banner") or "").strip()
-    top = (f"📌 <b>{html.escape(ban)}</b>\n{LINE}\n" if ban else "")
-    return (top + f"📚 <b>{make_bold_unicode('أقسام الأرشيف')}</b>\n{LINE}\n"
-            f"🗂 الأقسام: <b>{len(DATA['sections'])}</b> • 📦 المواد: <b>{total}</b>\n{LINE}")
-
-# ══════════════════ BACKUP / RESTORE ══════════════════
-async def do_backup(bot, chat_id=None, force=False):
-    target = chat_id or BACKUP_CHAT_ID
-    if not target:
-        return False
-    if not force and not (DIRTY["data"] or DIRTY["users"]):
-        return False
-    try:
-        stamp = time.strftime("%Y-%m-%d %H:%M")
-        for path, name in ((DATA_FILE, "archive.json"), (USERS_FILE, "users.json")):
-            if not os.path.exists(path):
-                continue
-            with open(path, "rb") as f:
-                await bot.send_document(target, InputFile(f, filename=name),
-                                        caption=f"💾 نسخة احتياطية • {stamp}")
-        DIRTY["data"] = DIRTY["users"] = False
-        return True
-    except Exception as e:
-        log.warning("backup failed: %s", e)
-        return False
-
-async def job_backup(ctx: ContextTypes.DEFAULT_TYPE):
-    await do_backup(ctx.bot)
-
-def apply_restore(payload, kind):
-    global DATA, USERS
-    if kind == "data":
-        DATA.clear(); DATA.update(_load_obj(payload, DEFAULT_DATA)); save_data()
-    else:
-        USERS.clear(); USERS.update(payload); save_users()
-
-def _load_obj(d, default):
-    for k, v in default.items():
-        d.setdefault(k, v)
-    for k, v in default.get("labels", {}).items():
-        d["labels"].setdefault(k, v)
-    for k, v in default.get("settings", {}).items():
-        d["settings"].setdefault(k, v)
-    return d
-
-async def notify_new(bot, sec, it):
-    """إشعار المستخدمين بالمادة الجديدة إن كان الإشعار مفعّلاً."""
-    if not S("notify_new"):
-        return
-    txt = (f"🆕 <b>{make_bold_unicode('جديد في الأرشيف')}</b>\n{LINE}\n"
-           f"{TYPE_EMOJI.get(it['type'],'📎')} <b>{html.escape(it.get('title',''))}</b>\n"
-           f"🗂 {html.escape(sec['title'])}\n{LINE}")
-    kb = InlineKeyboardMarkup([[IB(make_bold_unicode("📂 اذهب للمادة"),
-                                   callback_data=f"itm:{sec['id']}:{it['id']}:0", style="success")]])
-    for key, u in list(USERS.items()):
-        if u.get("banned") or u.get("mute_new"):
-            continue
-        try:
-            await bot.send_message(int(key), txt, parse_mode=ParseMode.HTML, reply_markup=kb)
-        except Exception:
-            pass
-
-# ══════════════════ FORCE SUBSCRIBE ══════════════════
-async def sub_ok(bot, uid):
-    ch = (S("force_sub") or "").strip()
-    if not ch:
-        return True
-    if not ch.startswith("@") and not ch.startswith("-100"):
-        ch = "@" + ch
-    try:
-        m = await bot.get_chat_member(ch, uid)
-        return m.status in ("member", "administrator", "creator", "owner")
-    except Exception:
-        return True
-
-def sub_kb():
-    ch = (S("force_sub") or "").lstrip("@")
     return InlineKeyboardMarkup([
-        [IB(make_bold_unicode("📢 اشترك في القناة"), url=f"https://t.me/{ch}", style="primary")],
-        [IB(make_bold_unicode("✅ تحققت، تابع"), callback_data="checksub", style="success")],
+        [InlineKeyboardButton(make_bold_unicode(f"🔌 Provider: {STATE.get('provider','zenex').upper()}"), callback_data="adm:prov", style="primary")],
+        [InlineKeyboardButton(make_bold_unicode("🟢 تفعيل/إيقاف الخدمات"), callback_data="adm:toggle", style="primary")],
+        [InlineKeyboardButton(make_bold_unicode("➕ رينج زينيكس"), callback_data="adm:add_zx", style="success"),
+         InlineKeyboardButton(make_bold_unicode("➕ رينج Mino"), callback_data="adm:add_mino", style="success")],
+        [InlineKeyboardButton(make_bold_unicode("🗑 حذف رينج زينيكس"), callback_data="adm:del", style="danger"),
+         InlineKeyboardButton(make_bold_unicode("🗑 حذف رينج Mino"), callback_data="adm:del_mino", style="danger")],
+        [InlineKeyboardButton(make_bold_unicode("📤 رفع كومبو"), callback_data="adm:combo_up", style="success"),
+         InlineKeyboardButton(make_bold_unicode("📁 كومبوهاتي"), callback_data="adm:combo_list", style="primary")],
+        [InlineKeyboardButton(make_bold_unicode("📋 الرينجات المباشرة"), callback_data="adm:list", style="primary")],
+        [InlineKeyboardButton(make_bold_unicode("📣 إعلان للجميع"), callback_data="adm:bc", style="primary"),
+         InlineKeyboardButton(make_bold_unicode("👥 مستخدمون"), callback_data="adm:users", style="primary")],
+        [InlineKeyboardButton(make_bold_unicode("🚫 حظر / فك مستخدم"), callback_data="adm:ban", style="danger")],
+        [InlineKeyboardButton(make_bold_unicode("📊 إحصائيات"), callback_data="adm:stats", style="primary"),
+         InlineKeyboardButton(make_bold_unicode("🔐 حالة الدخول"), callback_data="adm:logins", style="primary")],
     ])
 
-# ══════════════════ COMMANDS ══════════════════
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+def lang_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(make_bold_unicode("🇸🇦 العربية"), callback_data="lang:ar", style="primary")],
+        [InlineKeyboardButton(make_bold_unicode("🇬🇧 English"), callback_data="lang:en", style="primary")],
+        [InlineKeyboardButton(make_bold_unicode("🟨 کوردی"), callback_data="lang:ku", style="primary")],
+    ])
+
+# ══════════════════ Session helpers ══════════════════
+def cancel_task(ctx, chat_id):
+    t = ctx.application.bot_data.get(f"task:{chat_id}")
+    if t and not t.done(): t.cancel()
+    ctx.application.bot_data.pop(f"task:{chat_id}", None)
+def set_task(ctx, chat_id, t):
+    cancel_task(ctx, chat_id)
+    ctx.application.bot_data[f"task:{chat_id}"] = t
+
+WELCOME = ("⚡ <b>OTP APP IBRAHIM</b> ⚡\n"
+           "━━━━━━━━━━━━━━━━━━━━━\n"
+           "🟢 <b>Premium</b> • ⚡ <b>Fast</b> • 🔐 <b>Secure</b>\n"
+           "━━━━━━━━━━━━━━━━━━━━━")
+
+# ══════════════════ Commands ══════════════════
+async def cmd_start(update, ctx):
     u = note_user(update.effective_user)
-    if u.get("banned"):
-        return
+    if u.get("banned"): return
+    u["started"] = True; save_users()
+    lang = u["lang"]; is_admin = update.effective_user.id in ADMIN_IDS
+    tgu = update.effective_user
+    who = ("@" + tgu.username) if tgu.username else (tgu.first_name or "أخي")
+    greet = f"🌹 <b>السلام عليكم ورحمة الله وبركاته</b>\n👋 حيّاك الله أخي <b>{who}</b>"
+    await update.message.reply_text(f"{WELCOME}\n\n{greet}", parse_mode=ParseMode.HTML, reply_markup=main_kb(lang, is_admin))
+
+async def cmd_admin(update, ctx):
+    if update.effective_user.id not in ADMIN_IDS:
+        u = get_user(update.effective_user.id)
+        await update.message.reply_text(tr(u["lang"], "admin_only")); return
+    await update.message.reply_text(make_bold_unicode("🛠 Admin Panel"), parse_mode=ParseMode.HTML, reply_markup=admin_kb())
+
+async def cmd_lang(update, ctx):
+    u = get_user(update.effective_user.id)
+    await update.message.reply_text(tr(u["lang"], "choose_lang"), reply_markup=lang_kb())
+
+async def cmd_last(update, ctx):
     uid = update.effective_user.id
-    if S("maintenance") and not is_admin(uid):
-        await update.message.reply_text("🔧 البوت في وضع الصيانة مؤقتاً، جزاكم الله خيراً على صبركم.")
-        return
-    if not await sub_ok(ctx.bot, uid):
-        await update.message.reply_text("📢 للاستفادة من الأرشيف يرجى الاشتراك في القناة أولاً:",
-                                        reply_markup=sub_kb()); return
-    # رابط مشاركة عميق: /start it_i123
+    is_admin = uid in ADMIN_IDS
+    if not LAST_OTP:
+        await update.message.reply_text("لا يوجد أي OTP مسجّل بعد."); return
+    L = LAST_OTP
+    ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(L.get("ts", 0)))
+    if is_admin:
+        num = L.get("number") or "—"
+        code = L.get("code") or "—"
+        user_line = (f"@{L['username']}" if L.get("username") else (L.get("name") or "—")) + f" (<code>{L.get('uid')}</code>)"
+    else:
+        num = mask_number(L.get("number") or "")
+        code = mask_code(L.get("code") or "")
+        user_line = L.get("name") or (f"@{L['username']}" if L.get("username") else "—")
+    txt = ("📊 <b>آخر OTP</b>\n"
+           "━━━━━━━━━━━━━━━━━━━━━\n"
+           f"👤 <b>المستخدم:</b> {user_line}\n"
+           f"📱 <b>الخدمة:</b> {L.get('service') or '—'}\n"
+           f"🌍 <b>الدولة:</b> {flag(L.get('iso') or '')} {L.get('country') or '—'}\n"
+           f"☎️ <b>الرقم:</b> <code>{num}</code>\n"
+           f"🔑 <b>الكود:</b> <code>{code}</code>\n"
+           f"⏰ {ts}")
+    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
+
+async def cmd_pm(update, ctx):
+    uid = update.effective_user.id
+    if uid not in ADMIN_IDS:
+        await update.message.reply_text("⛔ للأدمن فقط."); return
     args = ctx.args or []
-    if args and args[0].startswith("it_"):
-        iid = args[0][3:]
-        s, it = find_item(iid)
-        if it:
-            if it["type"] == "pack":
-                head = pack_header(s, it)
-                kb = pack_kb(s, it, 0, uid)
-                if it.get("cover"):
-                    await ctx.bot.send_photo(update.effective_chat.id, it["cover"], caption=head,
-                                             parse_mode=ParseMode.HTML, reply_markup=kb)
-                else:
-                    await update.message.reply_text(head, parse_mode=ParseMode.HTML, reply_markup=kb)
-            else:
-                await send_item(ctx.bot, update.effective_chat.id, it, item_kb(s["id"], 0, uid, iid))
-            return
-    if args and args[0].startswith("sec_"):
-        sec = get_section(args[0][4:])
-        if sec and not sec.get("hidden"):
-            head = f"{sec['title']}\n{LINE}\n{sec.get('desc') or 'اختر المادة التي تريدها 👇'}\n{LINE}"
-            m = await update.message.reply_text(head, parse_mode=ParseMode.HTML, reply_markup=items_kb(sec, 0, 0))
-            start_marquee(ctx, m, lambda off=0: items_kb(sec, 0, off), items_texts(sec, 0))
-            return
-    who = ("@" + update.effective_user.username) if update.effective_user.username else (update.effective_user.first_name or "زائرنا")
+    if len(args) < 2:
+        await update.message.reply_text("الاستخدام:\n<code>/pm &lt;user_id&gt; نص الرسالة</code>", parse_mode=ParseMode.HTML); return
+    tid_raw = args[0]
+    text = " ".join(args[1:]).strip()
+    tid = re.sub(r"\D", "", tid_raw)
+    if not tid or not text:
+        await update.message.reply_text("⚠️ ID غير صحيح أو الرسالة فارغة."); return
+    try:
+        await ctx.bot.send_message(int(tid), f"📩 <b>رسالة من الإدارة:</b>\n━━━━━━━━━━━━━━━━━━━━━\n{text}", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(f"✅ أُرسلت إلى <code>{tid}</code>", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await update.message.reply_text(f"❌ فشل الإرسال: {e}")
+
+async def on_text(update, ctx):
+    # ====== كود استخراج الستيكر (مدمج) ======
+    if update.message.sticker:
+        sticker = update.message.sticker
+        file_id = sticker.file_id
+        file_unique_id = sticker.file_unique_id
+        emoji = sticker.emoji or "بدون إيموجي"
+        set_name = sticker.set_name or "غير معروف"
+        await update.message.reply_text(
+            f"✅ <b>تم استلام الستيكر!</b>\n\n"
+            f"📁 <b>File ID:</b>\n<code>{file_id}</code>\n\n"
+            f"🆔 <b>File Unique ID:</b>\n<code>{file_unique_id}</code>\n\n"
+            f"😊 <b>Emoji:</b> {emoji}\n"
+            f"📦 <b>Set Name:</b> {set_name}\n\n"
+            f"💡 <i>انسخ الـ File ID وضعه في كود البوت.</i>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+    # ===========================================
+
+    t = (update.message.text or "").strip()
+    uid = update.effective_user.id
+    u = note_user(update.effective_user); lang = u["lang"]
+    if u.get("banned"): return
+    is_admin = uid in ADMIN_IDS
+    # Force /start before interacting
+    if not u.get("started") and t != "/start":
+        await update.message.reply_text("👋 يرجى الضغط على /start للبدء أولاً.")
+        return
+
+    if is_admin and ctx.user_data.get("await_ban"):
+        ctx.user_data.pop("await_ban")
+        tid = re.sub(r"\D", "", t)
+        if not tid:
+            await update.message.reply_text("⚠️ أرسل ID رقمي صحيح."); return
+        tu = get_user(int(tid)); tu["banned"] = not tu.get("banned"); save_users()
+        state = "⛔ تم الحظر" if tu["banned"] else "✅ تم فك الحظر"
+        await update.message.reply_text(f"{state} للمستخدم <code>{tid}</code>", parse_mode=ParseMode.HTML); return
+
+    if is_admin and ctx.user_data.get("await_mino_range_for"):
+        sid = ctx.user_data.pop("await_mino_range_for")
+        parts = [x.strip() for x in t.split("|")]
+        if len(parts) < 2:
+            await update.message.reply_text(
+                "❌ الصيغة: <code>rid|country[|label]</code>\nمثال:\n<code>12345|غينيا|1</code>\n<code>12345|Guinea|2</code>\n<code>12345|249</code>",
+                parse_mode=ParseMode.HTML); return
+        rid = parts[0]
+        country_hint = parts[1]
+        label = parts[2] if len(parts) >= 3 else ""
+        iso = find_iso_by_name(country_hint) or (country_hint.lower() if len(country_hint) == 2 else "")
+        if not iso:
+            await update.message.reply_text(f"⚠️ لم أتعرف على الدولة: <b>{country_hint}</b>", parse_mode=ParseMode.HTML); return
+        country_full = iso_name(iso, "ar") or iso.upper()
+        if label: country_full = f"{country_full} {label}"
+        entry = {"rid": rid, "sid": sid, "iso": iso, "country": country_full, "hits": 1}
+        if label: entry["gid"] = label
+        STATE.setdefault("mino_ranges", []).append(entry)
+        save_state()
+        await update.message.reply_text(
+            make_bold_unicode(f"✅ أُضيف رينج Mino\n📱 {svc_name(sid,'ar')}\n🌍 {flag(iso)} {country_full}\n🆔 rid={rid}"),
+            parse_mode=ParseMode.HTML); return
+    if is_admin and ctx.user_data.get("await_range_for"):
+        sid = ctx.user_data.pop("await_range_for")
+        parts = [x.strip() for x in t.split("|")]
+        if len(parts) < 2:
+            await update.message.reply_text(
+                "❌ الصيغة: <code>code|country[|label]</code>\nمثال:\n<code>+9627|الأردن</code>\n<code>+224|غينيا|1</code>\n<code>+224|Guinea|2</code>",
+                parse_mode=ParseMode.HTML); return
+        code = parts[0]
+        country_hint = parts[1]
+        label = parts[2] if len(parts) >= 3 else ""
+        iso = find_iso_by_name(country_hint) or guess_iso(code)
+        if not iso:
+            await update.message.reply_text(f"⚠️ لم أتعرف على الدولة: <b>{country_hint}</b>", parse_mode=ParseMode.HTML); return
+        country_full = iso_name(iso, "ar") or iso.upper()
+        if label: country_full = f"{country_full} {label}"
+        entry = {"range": code, "country": country_full, "iso": iso, "hits": 0}
+        if label: entry["gid"] = label
+        STATE["custom"].setdefault(sid, []).append(entry)
+        save_state()
+        await update.message.reply_text(
+            make_bold_unicode(f"✅ أُضيف رينج زينيكس\n📱 {svc_name(sid,'ar')}\n🌍 {flag(iso)} {country_full}\n🔢 {code}"),
+            parse_mode=ParseMode.HTML); return
+    if is_admin and ctx.user_data.get("await_bc"):
+        ctx.user_data.pop("await_bc"); sent = 0
+        for k in list(USERS.keys()):
+            try: await ctx.bot.send_message(int(k), f"📣 {t}"); sent += 1
+            except Exception: pass
+        await update.message.reply_text(f"✅ {sent}"); return
+
+    if "📞" in t:
+        if not await enforce_sub(ctx, update.effective_chat.id, uid, lang): return
+        await update.message.reply_text(tr(lang,"pick_service"), reply_markup=services_kb(lang)); return
+    if "🌐" in t:
+        await update.message.reply_text(tr(lang,"choose_lang"), reply_markup=lang_kb()); return
+    if "🛠" in t and is_admin:
+        await update.message.reply_text(make_bold_unicode("🛠 Admin Panel"), parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
+    if "📜" in t:
+        hist = (u.get("history") or [])[-10:][::-1]
+        if not hist:
+            await update.message.reply_text(tr(lang, "no_history")); return
+        lines = [f"<b>{make_bold_unicode(tr(lang,'my_history'))}</b>\n━━━━━━━━━━━━━━━━━━━━━"]
+        for h in hist:
+            ts = time.strftime("%m-%d %H:%M", time.localtime(h.get("ts", 0)))
+            lines.append(f"⏰ {ts} | {flag(h.get('iso',''))} <b>{h.get('service','—')}</b>\n"
+                         f"☎️ <code>{h.get('number','—')}</code>  🔑 <code>{h.get('otp','—')}</code>")
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML); return
+    if "🔁" in t:
+        hist = u.get("history") or []
+        if not hist:
+            await update.message.reply_text(tr(lang, "no_history")); return
+        last = hist[-1]
+        sid_last = None
+        for k, v in SERVICE_MAP.items():
+            if v["name"].get(lang) == last.get("service") or v["name"].get("en") == last.get("service") or v["name"].get("ar") == last.get("service"):
+                sid_last = k; break
+        iso_last = (last.get("iso") or "").lower()
+        if not sid_last or not iso_last:
+            await update.message.reply_text(tr(lang, "no_history")); return
+        if not await enforce_sub(ctx, update.effective_chat.id, uid, lang): return
+        cancel_task(ctx, update.effective_chat.id)
+        task = asyncio.create_task(run_session(ctx, update.effective_chat.id, uid, sid_last, iso_last))
+        set_task(ctx, update.effective_chat.id, task); return
+
+async def on_document(update, ctx):
+    uid = update.effective_user.id
+    if uid not in ADMIN_IDS: return
+    sid = ctx.user_data.get("combo_sid")
+    if not sid:
+        await update.message.reply_text("⚠️ اختر أولاً الخدمة من: 🛠 Admin → 📤 رفع كومبو"); return
+    doc = update.message.document
+    if not doc: return
+    fname = (doc.file_name or "combo.txt")
+    base = os.path.splitext(fname)[0]
+    file = await doc.get_file()
+    path = f"/tmp/{fname}"
+    await file.download_to_drive(path)
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f: raw = f.read()
+    finally:
+        try: os.remove(path)
+        except Exception: pass
+    numbers = []
+    for line in raw.splitlines():
+        n = re.sub(r"[^\d+]", "", line)
+        if len(re.sub(r"\D", "", n)) >= 6: numbers.append(n)
+    if not numbers:
+        await update.message.reply_text("⚠️ الملف لا يحتوي أرقاماً."); return
+    iso = guess_iso(numbers[0])
+    COMBOS.setdefault(sid, {})[base] = {"numbers": numbers, "used": [], "iso": iso}
+    save_combos()
+    ctx.user_data.pop("combo_sid", None)
     await update.message.reply_text(
-        f"{welcome_text()}\n\n🌿 <b>{make_bold_unicode('السلام عليكم ورحمة الله وبركاته')}</b>\n<b>{make_bold_unicode(who)}</b>",
-        parse_mode=ParseMode.HTML, reply_markup=main_kb(uid))
+        f"✅ رُفع الكومبو <b>{base}</b> ({len(numbers)} رقم) للخدمة <b>{svc_name(sid,'ar')}</b>.\n"
+        f"سيظهر كقائمة داخل هذه الخدمة.",
+        parse_mode=ParseMode.HTML)
 
-async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    await update.message.reply_text(f"🛠 <b>{make_bold_unicode('لوحة الأدمن')}</b>\n{LINE}",
-                                    parse_mode=ParseMode.HTML, reply_markup=admin_kb())
+async def send_number(ctx, chat_id, uid, sid, gkey, edit_mid=None):
+    u = get_user(uid); lang = u["lang"]
+    svc = SERVICE_MAP.get(sid, {"emoji":"📱"})
+    rg = best_range(sid, gkey)
+    if not rg:
+        text = tr(lang, "no_range")
+        if edit_mid:
+            try: await ctx.bot.edit_message_text(text, chat_id=chat_id, message_id=edit_mid)
+            except Exception: await ctx.bot.send_message(chat_id, text)
+        else: await ctx.bot.send_message(chat_id, text)
+        return None
+    iso = rg.get("iso") or gkey.split("#",1)[0]
+    country_label = rg.get("country") or iso_name(iso, lang) or iso.upper()
+    if edit_mid:
+        try:
+            await ctx.bot.edit_message_text(
+                f"{tr(lang,'reserving')}\n{svc['emoji']} <b>{svc_name(sid,lang)}</b> — {flag(iso)} {country_label}",
+                chat_id=chat_id, message_id=edit_mid, parse_mode=ParseMode.HTML)
+        except Exception: pass
+    res = reserve_number(rg["range"])
+    if not res:
+        text = tr(lang, "no_range")
+        if edit_mid:
+            try: await ctx.bot.edit_message_text(text, chat_id=chat_id, message_id=edit_mid)
+            except Exception: pass
+        else: await ctx.bot.send_message(chat_id, text)
+        return None
+    country = country_label
+    op = res.get("operator") or "—"
+    u["stats"]["numbers"] += 1; save_users()
+    header = f"{flag(iso)} <b>{make_bold_unicode(country)} Number Assigned:</b>"
+    box = (f"┌──────────────────────┐\n"
+           f"│   ⏳ {make_bold_unicode(tr(lang,'waiting_code'))}   │\n"
+           f"└──────────────────────┘")
+    body = (f"{header}\n{box}\n"
+            f"\n{svc['emoji']} <b>{make_bold_unicode(svc_name(sid,lang))}</b> — {tr(lang,'operator')}: <code>{make_bold_unicode(op)}</code>\n"
+            f"☎️ <code>+{re.sub(r'[^0-9]','',str(res['number']))}</code>\n"
+            f"<i>{tr(lang,'copy_hint')}</i>")
+    kb = number_kb(sid, gkey, res["number"], lang)
+    if edit_mid:
+        try:
+            await ctx.bot.edit_message_text(body, chat_id=chat_id, message_id=edit_mid, parse_mode=ParseMode.HTML, reply_markup=kb); mid = edit_mid
+        except Exception:
+            m = await ctx.bot.send_message(chat_id, body, parse_mode=ParseMode.HTML, reply_markup=kb); mid = m.message_id
+    else:
+        m = await ctx.bot.send_message(chat_id, body, parse_mode=ParseMode.HTML, reply_markup=kb); mid = m.message_id
+    register_reservation(res["number"], uid, sid, iso, svc_name(sid,lang), country)
+    return {"number": res["number"], "range": rg["range"], "msg_id": mid, "combo": res.get("combo"), "svc_name": svc_name(sid,lang), "country": country, "iso": iso, "sid": sid}
 
-async def cmd_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🆔 <code>{update.effective_user.id}</code>", parse_mode=ParseMode.HTML)
+async def run_session(ctx, chat_id, uid, sid, gkey, init_mid=None):
+    u = get_user(uid); lang = u["lang"]
+    seen = set()
+    current = await send_number(ctx, chat_id, uid, sid, gkey, edit_mid=init_mid)
+    if not current: return
+    end = time.time() + POLL_TIMEOUT
+    try:
+        while time.time() < end:
+            await asyncio.sleep(POLL_INTERVAL)
+            hit = find_otp_for(current["number"], seen)
+            if hit:
+                seen.add(hit["id"])
+                u["stats"]["otps"] += 1
+                u["history"].append({"ts": int(time.time()), "service": current["svc_name"], "number": current["number"], "iso": iso, "otp": hit["code"]})
+                u["history"] = u["history"][-100:]; save_users()
+                if current.get("combo"):
+                    consume_combo(current["combo"][0], current["combo"][1], current["number"])
+                cancel_number(current["number"])
+                unregister_reservation(current["number"])
+                set_last_otp(uid, current["number"], hit["code"], current["svc_name"], current["country"], iso)
+                dm_kb_rows = [[
+                    InlineKeyboardButton(make_bold_unicode(tr(lang, "copy_code")), callback_data=f"cpc:{hit['code']}", style="success"),
+                    InlineKeyboardButton(make_bold_unicode(tr(lang, "repeat_last")), callback_data=f"new:{current.get('sid') or sid}:{iso}", style="primary"),
+                ]]
+                gu = group_url()
+                cu = channel_url()
+                if gu: dm_kb_rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "goto_group")), url=gu, style="primary")])
+                if cu: dm_kb_rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "goto_channel")), url=cu, style="success")])
+                dm_kb = InlineKeyboardMarkup(dm_kb_rows)
+                iso_up = (iso or "").upper()
+                pretty_num = "+" + re.sub(r'[^0-9]','', str(current['number']))
+                brand_line = f"{BRAND_FLAG} <b>{make_bold_unicode(BOT_BRAND)}</b> {BRAND_FLAG}"
+                try:
+                    await ctx.bot.send_message(chat_id,
+                        f"{brand_line}\n"
+                        f"<b>{make_bold_unicode(tr(lang,'otp_arrived'))}</b>\n"
+                        "━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"{flag(iso)} <b>{make_bold_unicode(iso_up)}</b> | 📱 SMS <code>{pretty_num}</code> | 🎉 <b>{make_bold_unicode(current['svc_name'])}</b>\n"
+                        f"🌍 <b>{make_bold_unicode(current['country'])}</b>\n"
+                        "━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔑 <b>{make_bold_unicode(tr(lang,'code_word'))}:</b>\n"
+                        f"<code>{hit['code']}</code>\n"
+                        f"<i>{tr(lang,'copy_hint')}</i>",
+                        parse_mode=ParseMode.HTML, reply_markup=dm_kb)
+                except Exception as e: log.warning("dm otp send failed: %s", e)
+                if OTP_GROUP_ID:
+                    try:
+                        shown_code = mask_code(hit["code"]) if MASK_GROUP_CODE else hit["code"]
+                        gkb_rows = [[InlineKeyboardButton(make_bold_unicode(tr(lang, "copy_code")), callback_data=f"cpc:{hit['code']}", style="success")]]
+                        bu = bot_url()
+                        if bu: gkb_rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "open_bot")), url=bu, style="primary")])
+                        if cu: gkb_rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "goto_channel")), url=cu, style="success")])
+                        gkb = InlineKeyboardMarkup(gkb_rows)
+                        who = u.get("username")
+                        who_disp = f"@{who}" if who else (u.get('name') or ('ID '+str(uid)))
+                        who_line = f"<b>{make_bold_unicode(tr(lang,'pulled_by'))}:</b> {make_bold_unicode(who_disp)}"
+                        code_line = f"🔑 <b>{make_bold_unicode(tr(lang,'code_word'))}:</b>\n<code>{shown_code}</code>"
+                        await ctx.bot.send_message(
+                            OTP_GROUP_ID,
+                            f"{brand_line}\n"
+                            f"<b>{make_bold_unicode(tr(lang,'otp_arrived'))}</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📱 <b>{make_bold_unicode(current['svc_name'])}</b>\n"
+                            f"🌍 {flag(iso)} <b>{make_bold_unicode(current['country'])}</b>\n"
+                            f"☎️ <code>{mask_number(current['number'])}</code>\n"
+                            "━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"{code_line}\n"
+                            f"{who_line}",
+                            parse_mode=ParseMode.HTML, reply_markup=gkb)
+                    except Exception as e: log.warning("group send failed: %s", e)
+                # ميزة: انتظر كوداً ثانياً لمدة 60 ثانية (2FA)
+                try:
+                    await ctx.bot.send_message(chat_id, f"<i>{tr(lang,'waiting_second')}</i>", parse_mode=ParseMode.HTML)
+                except Exception: pass
+                second_end = time.time() + 60
+                while time.time() < second_end:
+                    await asyncio.sleep(POLL_INTERVAL)
+                    hit2 = find_otp_for(current["number"], seen)
+                    if hit2:
+                        seen.add(hit2["id"])
+                        try:
+                            kb2 = InlineKeyboardMarkup([[InlineKeyboardButton(make_bold_unicode(tr(lang,"copy_code")), callback_data=f"cpc:{hit2['code']}", style="success")]])
+                            await ctx.bot.send_message(chat_id,
+                                f"<b>{make_bold_unicode(tr(lang,'second_code'))}</b>\n"
+                                "━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🔑 <code>{hit2['code']}</code>",
+                                parse_mode=ParseMode.HTML, reply_markup=kb2)
+                        except Exception: pass
+                        break
+                return
+    except asyncio.CancelledError:
+        unregister_reservation(current["number"]); return
+    try:
+        cancel_number(current["number"])
+        unregister_reservation(current["number"])
+        await ctx.bot.send_message(chat_id, f"{tr(lang,'timeout')}: <code>{current['number']}</code>", parse_mode=ParseMode.HTML)
+    except Exception: pass
 
-async def cmd_backup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    ok = await do_backup(ctx.bot, chat_id=update.effective_chat.id, force=True)
-    if BACKUP_CHAT_ID:
-        await do_backup(ctx.bot, force=True)
-    await update.message.reply_text("💾 تم إرسال النسخة الاحتياطية." if ok else "⚠️ تعذّر إنشاء النسخة.")
-
-async def cmd_restore(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    ctx.user_data["await"] = ("restore", None)
-    await update.message.reply_text(
-        f"♻️ أرسل الآن ملف <b>archive.json</b> (أو users.json) لاستعادته.\n{LINE}\n"
-        "يمكنك إعادة توجيه الملف من قناة النسخ الاحتياطي مباشرة.", parse_mode=ParseMode.HTML)
-
-# ══════════════════ CALLBACKS ══════════════════
-async def on_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def on_callback(update, ctx):
     q = update.callback_query
-    uid = q.from_user.id
     data = q.data or ""
+    uid = q.from_user.id
+    chat_id = q.message.chat_id
+    u = note_user(q.from_user); lang = u["lang"]
+    if u.get("banned"): await q.answer(tr(lang,"banned"), show_alert=True); return
+    if not u.get("started"):
+        await q.answer("اضغط /start أولاً", show_alert=True)
+        try: await ctx.bot.send_message(chat_id, "👋 يرجى الضغط على /start للبدء أولاً.")
+        except Exception: pass
+        return
     await q.answer()
 
-    if data == "noop":
+    if data == "noop": return
+    if data == "sub:check":
+        ok, missing = await check_subscription(ctx, uid)
+        if ok:
+            try: await q.edit_message_text("✅", reply_markup=services_kb(lang))
+            except Exception: pass
+        else:
+            try: await q.edit_message_text(tr(lang,"not_subbed"), reply_markup=sub_kb(missing, lang))
+            except Exception: pass
         return
-    # إبطال أي شريط متحرك قديم قبل أي انتقال (إصلاح جليتش الرجوع)
+
+    gated = data.startswith(("svc:","co:","new:","cop:"))
+    if gated:
+        ok, missing = await check_subscription(ctx, uid)
+        if not ok:
+            try: await q.edit_message_text(tr(lang,"must_join"), reply_markup=sub_kb(missing, lang))
+            except Exception: pass
+            return
+
+    if data == "services":
+        cancel_task(ctx, chat_id)
+        await q.edit_message_text(tr(lang,"pick_service"), reply_markup=services_kb(lang)); return
+
+    if data.startswith("lang:"):
+        u["lang"] = data.split(":",1)[1]; save_users()
+        try: await q.edit_message_text(tr(u["lang"], "lang_set"))
+        except Exception: pass
+        try: await ctx.bot.send_message(chat_id, "✅", reply_markup=main_kb(u["lang"], uid in ADMIN_IDS))
+        except Exception: pass
+        return
+
+    if data.startswith("svc:"):
+        sid = data.split(":",1)[1]; cancel_task(ctx, chat_id)
+        kb = countries_kb(sid, lang, 0)
+        if not kb:
+            await q.edit_message_text(tr(lang,"no_country"),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(lang,"back"), callback_data="services", style="danger")]]))
+            return
+        s = SERVICE_MAP.get(sid, {})
+        await q.edit_message_text(f"{s.get('emoji','')} <b>{svc_name(sid,lang)}</b>\n{tr(lang,'pick_country')}", parse_mode=ParseMode.HTML, reply_markup=kb); return
+
+    if data.startswith("cop:"):
+        _, sid, page = data.split(":",2)
+        try: await q.edit_message_reply_markup(reply_markup=countries_kb(sid, lang, int(page)))
+        except Exception: pass
+        return
+
+    if data.startswith("co:") or data.startswith("new:"):
+        _, sid, gkey = data.split(":",2)
+        cancel_task(ctx, chat_id)
+        task = asyncio.create_task(run_session(ctx, chat_id, uid, sid, gkey, init_mid=q.message.message_id))
+        set_task(ctx, chat_id, task); return
+
+    if data.startswith("cp:"):
+        num = data.split(":",1)[1]
+        await ctx.bot.send_message(chat_id, f"<code>{num}</code>", parse_mode=ParseMode.HTML); return
+
+    if data.startswith("cpc:"):
+        code_val = data.split(":",1)[1]
+        try: await q.answer(f"📋 {code_val}", show_alert=False)
+        except Exception: pass
+        await ctx.bot.send_message(chat_id, f"<code>{code_val}</code>", parse_mode=ParseMode.HTML); return
+
+    if data.startswith("cxl:"):
+        num = data.split(":")[1]
+        cancel_task(ctx, chat_id); cancel_number(num); u["stats"]["cancels"] += 1; save_users()
+        try: await q.edit_message_text(f"❌ <code>{num}</code>", parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(lang,"back"), callback_data="services", style="danger")]]))
+        except Exception: pass
+        return
+
+    if data.startswith("adm:") and uid in ADMIN_IDS:
+        sub = data.split(":",1)[1]
+        if sub == "panel":
+            await q.edit_message_text(make_bold_unicode("🛠 Admin"), parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
+        if sub == "prov":
+            STATE["provider"] = "zyron" if STATE.get("provider","zenex") == "zenex" else "zenex"
+            save_state(); await q.edit_message_text(make_bold_unicode("🛠 Admin"), parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
+        if sub == "toggle":
+            rows = []
+            for sid, s in SERVICE_MAP.items():
+                mark = "✅" if sid not in STATE.get("disabled", []) else "🚫"
+                rows.append([InlineKeyboardButton(f"{mark} {s['emoji']} {svc_name(sid,lang)}", callback_data=f"tgl:{sid}", style="primary")])
+            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
+            await q.edit_message_text("Services", reply_markup=InlineKeyboardMarkup(rows)); return
+        if sub == "add_zx":
+            rows = [[InlineKeyboardButton(make_bold_unicode(f"{sv['emoji']} {svc_name(sid_,lang)}"), callback_data=f"addsvc:{sid_}", style="primary")] for sid_, sv in SERVICE_MAP.items()]
+            rows.append([InlineKeyboardButton(make_bold_unicode("⬅️"), callback_data="adm:panel", style="danger")])
+            await q.edit_message_text(make_bold_unicode("➕ إضافة رينج زينيكس — اختر خدمة:"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
+        if sub == "add_mino":
+            rows = [[InlineKeyboardButton(make_bold_unicode(f"{sv['emoji']} {svc_name(sid_,lang)}"), callback_data=f"addminosvc:{sid_}", style="success")] for sid_, sv in SERVICE_MAP.items()]
+            rows.append([InlineKeyboardButton(make_bold_unicode("⬅️"), callback_data="adm:panel", style="danger")])
+            await q.edit_message_text(make_bold_unicode("➕ إضافة رينج Mino — اختر خدمة:"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
+        if sub == "del_mino":
+            rows = []
+            for r in STATE.get("mino_ranges", []):
+                rid = r.get("rid",""); sid_ = r.get("sid",""); iso = r.get("iso","")
+                rows.append([InlineKeyboardButton(f"🗑 Mino {sid_} {flag(iso.upper())} rid={rid}", callback_data=f"delmino:{rid}", style="danger")])
+            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
+            await q.edit_message_text(make_bold_unicode("🗑 حذف رينج Mino:"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
+        if sub == "del":
+            rows = []
+            for sid, arr in STATE.get("custom", {}).items():
+                for r in arr:
+                    rows.append([InlineKeyboardButton(f"🗑 {sid} {r['range']} ({r.get('country','')})", callback_data=f"delrng:{sid}:{r['range']}", style="danger")])
+            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
+            await q.edit_message_text("حذف رينج:", reply_markup=InlineKeyboardMarkup(rows)); return
+        if sub == "combo_up":
+            rows = [[InlineKeyboardButton(f"{s['emoji']} {svc_name(sid,lang)}", callback_data=f"cbsvc:{sid}", style="success")] for sid, s in SERVICE_MAP.items()]
+            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
+            await q.edit_message_text("📤 اختر الخدمة لرفع الكومبو:", reply_markup=InlineKeyboardMarkup(rows)); return
+        if sub == "combo_list":
+            rows = []
+            for sid, dct in COMBOS.items():
+                for name, c in dct.items():
+                    rows.append([InlineKeyboardButton(f"📁 {sid}/{name} — {len(c['numbers'])} (used {len(c.get('used',[]))})", callback_data=f"cbdel:{sid}:{name}", style="primary")])
+            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
+            await q.edit_message_text("Combos (اضغط للحذف):", reply_markup=InlineKeyboardMarkup(rows)); return
+        if sub == "list":
+            base = all_ranges()
+            lines = [f"📋 {len(base)}:"]
+            for r in base[:60]:
+                lines.append(f"• {r.get('service')} — <code>{r.get('range')}</code> {flag((r.get('iso') or '').lower())} {r.get('hits',0)}")
+            await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+        if sub == "bc":
+            ctx.user_data["await_bc"] = True
+            await q.edit_message_text("📣 أرسل نص الإعلان."); return
+        if sub == "ban":
+            ctx.user_data["await_ban"] = True
+            await q.edit_message_text("🚫 أرسل <b>ID</b> المستخدم لحظره أو فك حظره.\n(الايدي يظهر بجانب اسم المستخدم في قائمة 👥 مستخدمون)", parse_mode=ParseMode.HTML); return
+        if sub == "users":
+            lines = [f"👥 <b>المستخدمون:</b> {len(USERS)}", "━━━━━━━━━━━━━━━━━━━━━"]
+            items = sorted(USERS.items(), key=lambda kv: -(kv[1].get("stats", {}).get("numbers", 0)))
+            for k, x in items[:40]:
+                st = x.get("stats", {})
+                name = x.get("name") or "—"
+                un = f"@{x['username']}" if x.get("username") else ""
+                ban = "⛔ " if x.get("banned") else ""
+                lines.append(f"{ban}<b>{name}</b> {un}\n   🆔 <code>{k}</code> — 📞 {st.get('numbers',0)} • 🔑 {st.get('otps',0)} • ❌ {st.get('cancels',0)}")
+            txt = "\n".join(lines)
+            if len(txt) > 3900: txt = txt[:3900] + "\n…"
+            await q.edit_message_text(txt, parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+        if sub == "stats":
+            n = sum(x.get("stats", {}).get("numbers", 0) for x in USERS.values())
+            o = sum(x.get("stats", {}).get("otps", 0) for x in USERS.values())
+            c = sum(x.get("stats", {}).get("cancels", 0) for x in USERS.values())
+            banned = sum(1 for x in USERS.values() if x.get("banned"))
+            await q.edit_message_text(
+                "📊 <b>إحصائيات عامة</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👥 المستخدمون: <b>{len(USERS)}</b>\n"
+                f"⛔ المحظورون: <b>{banned}</b>\n"
+                f"📞 الأرقام المحجوزة: <b>{n}</b>\n"
+                f"🔑 الأكواد الواصلة: <b>{o}</b>\n"
+                f"❌ الإلغاءات: <b>{c}</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+        if sub == "logins":
+            await q.edit_message_text("🔐 جاري فحص تسجيل الدخول للموقعين...")
+            report = await asyncio.to_thread(logins_report)
+            await q.edit_message_text(report, parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 إعادة الفحص", callback_data="adm:logins", style="primary")],
+                    [InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+
+    if data.startswith("tgl:") and uid in ADMIN_IDS:
+        sid = data.split(":",1)[1]
+        dis = STATE.setdefault("disabled", [])
+        (dis.remove(sid) if sid in dis else dis.append(sid))
+        save_state(); q.data = "adm:toggle"; await on_callback(update, ctx); return
+    if data.startswith("addsvc:") and uid in ADMIN_IDS:
+        sid = data.split(":",1)[1]
+        ctx.user_data["await_range_for"] = sid
+        await q.edit_message_text(
+            f"➕ رينج زينيكس — {svc_name(sid,'ar')}\n\nأرسل: <code>code|country</code>\nمثال: <code>+9627|الأردن</code> أو <code>+20|Egypt</code>",
+            parse_mode=ParseMode.HTML); return
+    if data.startswith("delrng:") and uid in ADMIN_IDS:
+        _, sid, code = data.split(":",2)
+        STATE["custom"][sid] = [r for r in STATE.get("custom",{}).get(sid,[]) if r["range"] != code]
+        save_state(); await q.edit_message_text(f"✅ حُذف {code}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+    if data.startswith("addminosvc:") and uid in ADMIN_IDS:
+        sid = data.split(":",1)[1]
+        ctx.user_data["await_mino_range_for"] = sid
+        await q.edit_message_text(
+            f"➕ رينج Mino — {svc_name(sid,'ar')}\n\nأرسل: <code>rid|country</code>\nمثال: <code>12345|السودان</code> أو <code>12345|Egypt</code> أو <code>12345|249</code>",
+            parse_mode=ParseMode.HTML); return
+    if data.startswith("delmino:") and uid in ADMIN_IDS:
+        rid = data.split(":",1)[1]
+        STATE["mino_ranges"] = [r for r in STATE.get("mino_ranges", []) if str(r.get("rid")) != rid]
+        save_state()
+        await q.edit_message_text(f"✅ حُذف rid={rid}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+
+    if data.startswith("cbsvc:") and uid in ADMIN_IDS:
+        sid = data.split(":",1)[1]
+        ctx.user_data["combo_sid"] = sid
+        await q.edit_message_text(
+            f"📤 <b>{svc_name(sid,'ar')}</b>\nأرسل الآن ملف <code>.txt</code> يحتوي رقم في كل سطر.\n"
+            f"سيتم استخدامه كمصدر للأرقام لهذه الخدمة (لا سحب من الموقع).",
+            parse_mode=ParseMode.HTML); return
+    if data.startswith("cbdel:") and uid in ADMIN_IDS:
+        _, sid, name = data.split(":",2)
+        COMBOS.get(sid, {}).pop(name, None); save_combos()
+        await q.edit_message_text(f"🗑 تم حذف {sid}/{name}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+
+# ══════════════════ Main ══════════════════
+async def on_startup(app):
+    global BOT_USERNAME, OTP_GROUP_LINK
     try:
-        if q.message:
-            stop_marquee(ctx, q.message.chat_id)
-            new_view(q.message.chat_id)
-    except Exception:
-        pass
-    if not rate_ok(uid, 0.3):
-        return
-    if S("maintenance") and not is_admin(uid):
-        await q.answer("🔧 البوت في وضع الصيانة", show_alert=True); return
-
-    if data == "checksub":
-        if await sub_ok(ctx.bot, uid):
-            await safe_edit(q, "✅ جزاك الله خيراً، يمكنك الآن استخدام الأرشيف.")
-            await ctx.bot.send_message(q.message.chat_id, welcome_text(), parse_mode=ParseMode.HTML,
-                                       reply_markup=main_kb(uid))
-        else:
-            await q.answer("⚠️ لم أجد اشتراكك بعد", show_alert=True)
-        return
-    if not await sub_ok(ctx.bot, uid):
-        await safe_edit(q, "📢 يرجى الاشتراك في القناة أولاً:", reply_markup=sub_kb()); return
-
-    # ── القوائم العامة ──
-    if data == "sections":
-        msg = await safe_edit(q, sections_header(), reply_markup=sections_kb(0, uid))
-        start_marquee(ctx, msg, lambda off=0: sections_kb(off, uid),
-                      [f"{s['title']} • {len(s['items'])}" for s in DATA["sections"]])
-        return
-
-    if data.startswith("sec:"):
-        _, sid, page = data.split(":")
-        sec = get_section(sid)
-        if not sec:
-            await safe_edit(q, "⚠️ القسم غير موجود."); return
-        if sec.get("hidden") and not is_admin(uid):
-            await q.answer("🙈 هذا القسم غير متاح حالياً", show_alert=True); return
-        if sec.get("pw") and not is_admin(uid) and sid not in (ctx.user_data.get("unlocked") or []):
-            ctx.user_data["unlock"] = sid
-            await safe_edit(q, f"🔐 <b>{make_bold_unicode('قسم مقفل')}</b>\n{LINE}\nأرسل كلمة المرور للدخول:"); return
-        page = int(page)
-        head = (f"{sec['title']}\n{LINE}\n"
-                f"{sec.get('desc') or 'اختر المادة التي تريدها 👇'}\n"
-                f"📦 العدد: <b>{len(sec['items'])}</b>\n{LINE}")
-        msg = await safe_edit(q, head, reply_markup=items_kb(sec, page, 0))
-        start_marquee(ctx, msg, lambda off=0: items_kb(sec, page, off), items_texts(sec, page))
-        return
-
-    if data.startswith("ssrch:"):
-        sid = data.split(":")[1]
-        ctx.user_data["search"] = sid
-        await safe_edit(q, "🔎 أرسل كلمة البحث داخل هذا القسم:"); return
-
-    if data.startswith("itm:"):
-        _, sid, iid, page = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        if not it:
-            await q.answer("⚠️ العنصر محذوف", show_alert=True); return
-        if it.get("hidden") and not is_admin(uid):
-            await q.answer("🙈 هذه المادة غير متاحة", show_alert=True); return
-        if int(it.get("publish_at") or 0) > int(time.time()) and not is_admin(uid):
-            await q.answer("⏰ سيُنشر قريباً إن شاء الله", show_alert=True); return
-        if it["type"] == "pack":
-            note_hist(uid, iid)
-            await show_pack(ctx, q, sec, it, int(page), uid)
-            return
-        if not dl_ok(uid):
-            await q.answer("🚦 بلغت حدّك اليومي، عد غداً بإذن الله", show_alert=True); return
-        note_hist(uid, iid); note_dl(it); award(uid, 1)
-        await send_item(ctx.bot, q.message.chat_id, it, item_kb(sid, int(page), uid, iid))
-        return
-
-    if data.startswith("fav:"):
-        iid = data.split(":")[1]
-        u = USERS.get(str(uid))
-        if not u:
-            return
-        fav = u.setdefault("fav", [])
-        if iid in fav:
-            fav.remove(iid); await q.answer("💔 أُزيلت من المفضلة", show_alert=False)
-        else:
-            fav.append(iid); await q.answer("⭐ أُضيفت للمفضلة", show_alert=False)
-        save_users(); return
-
-    if data.startswith("pf:"):
-        _, sid, iid, idx, page = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        files = it.get("files", []) if it else []
-        if not files or int(idx) >= len(files):
-            await q.answer("⚠️ الملف غير موجود", show_alert=True); return
-        if not dl_ok(uid):
-            await q.answer("🚦 بلغت حدّك اليومي، عد غداً بإذن الله", show_alert=True); return
-        note_dl(it); award(uid, 1)
-        await send_pack_file(ctx.bot, q.message.chat_id, it, files[int(idx)])
-        return
-
-    if data.startswith("pall:"):
-        _, sid, iid, page = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        files = it.get("files", []) if it else []
-        if not files:
-            await q.answer("⚠️ لا توجد ملفات", show_alert=True); return
-        if not dl_ok(uid):
-            await q.answer("🚦 بلغت حدّك اليومي، عد غداً بإذن الله", show_alert=True); return
-        note_dl(it); award(uid, 2)
-        for f in files:
-            try:
-                await send_pack_file(ctx.bot, q.message.chat_id, it, f)
-            except Exception as e:
-                log.warning("send pack file failed: %s", e)
-        return
-
-    if data.startswith("cart:"):
-        iid = data.split(":")[1]
-        u = USERS.get(str(uid))
-        if not u:
-            return
-        c = u.setdefault("cart", [])
-        if iid in c:
-            c.remove(iid); await q.answer("🧺 أُزيلت من السلة")
-        else:
-            c.append(iid); await q.answer("🧺 أُضيفت للسلة")
-        save_users(); return
-
-    if data == "cart:send":
-        u = USERS.get(str(uid)) or {}
-        ids = list(u.get("cart") or [])
-        if not ids:
-            await q.answer("🧺 السلة فارغة", show_alert=True); return
-        if not dl_ok(uid):
-            await q.answer("🚦 بلغت حدّك اليومي", show_alert=True); return
-        for iid in ids:
-            s2, it2 = find_item(iid)
-            if not it2:
-                continue
-            try:
-                if it2["type"] == "pack":
-                    for f in it2.get("files", []):
-                        await send_pack_file(ctx.bot, q.message.chat_id, it2, f)
-                else:
-                    await send_item(ctx.bot, q.message.chat_id, it2)
-                note_dl(it2)
-            except Exception as e:
-                log.warning("cart send: %s", e)
-        award(uid, len(ids))
-        await q.answer("📥 تم إرسال محتويات السلة"); return
-
-    if data == "cart:clear":
-        u = USERS.get(str(uid))
-        if u:
-            u["cart"] = []; save_users()
-        await safe_edit(q, "🧺 تم تفريغ السلة."); return
-
-    if data.startswith("rate:"):
-        _, iid, n = data.split(":")
-        s2, it2 = find_item(iid)
-        if not it2:
-            return
-        it2.setdefault("rate", {})[str(uid)] = int(n)
-        save_data(); award(uid, 1)
-        avg, cnt = item_rating(it2)
-        await q.answer(f"⭐ شكراً لك — المعدل الآن {avg}/5 من {cnt} تقييم", show_alert=True); return
-
-    if data.startswith("shr:"):
-        iid = data.split(":")[1]
-        lnk = share_link(iid)
-        await q.answer(lnk or "⚠️ ضع BOT_USERNAME في الكود لتفعيل الروابط", show_alert=True); return
-
-    if data.startswith("sim:"):
-        _, sid, iid = data.split(":")
-        s2, it2 = find_item(iid)
-        pool = []
-        tags = set((it2.get("tags") or []) if it2 else [])
-        for ss, ii in all_items():
-            if ii["id"] == iid or ii.get("hidden"):
-                continue
-            score = (2 if ss["id"] == sid else 0) + len(tags & set(ii.get("tags") or []))
-            if score:
-                pool.append((score, ss, ii))
-        pool.sort(key=lambda x: -x[0])
-        pairs = [(ss, ii) for _, ss, ii in pool[:10]]
-        m = await ctx.bot.send_message(q.message.chat_id, f"🔁 <b>{make_bold_unicode('مواد مشابهة')}</b>\n{LINE}",
-                                       parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
-        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off), [f"{i['title']}" for _, i in pairs]); return
-
-    if data.startswith("tagq:"):
-        tg = data.split(":", 1)[1]
-        pairs = [(s2, it2) for s2, it2 in all_items() if tg in (it2.get("tags") or []) and not it2.get("hidden")][:20]
-        msg2 = await safe_edit(q, f"🏷 <b>{html.escape(tg)}</b>\n{LINE}", reply_markup=results_kb(pairs, 0, back="tags:list"))
-        start_marquee(ctx, msg2, lambda off=0: results_kb(pairs, off, back="tags:list"),
-                      [f"{i['title']}" for _, i in pairs]); return
-
-    if data == "tags:list":
-        tags = all_tags()
-        rows = [[IB(make_bold_unicode(f"🏷 {t} ({n})"), callback_data=f"tagq:{t}", style="primary")] for t, n in list(tags.items())[:20]]
-        rows = rows or [[IB(make_bold_unicode("لا توجد وسوم بعد"), callback_data="noop")]]
-        await safe_edit(q, f"🏷 <b>{make_bold_unicode('الوسوم')}</b>\n{LINE}", reply_markup=InlineKeyboardMarkup(rows)); return
-
-    if data.startswith("advt:"):
-        t = data.split(":")[1]
-        ctx.user_data["adv_type"] = None if t == "all" else t
-        ctx.user_data["search"] = True
-        await safe_edit(q, f"🔍 أرسل كلمة البحث ({'كل الأنواع' if t == 'all' else TYPE_EMOJI.get(t,'') + ' ' + t}):"); return
-
-    # ── من هنا فصاعداً أوامر الأدمن ──
-    if not is_admin(uid):
-        await q.answer("🚫 غير مصرح", show_alert=True); return
-
-    if data.startswith("pin:"):
-        _, sid, iid = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        if it:
-            it["pin"] = not it.get("pin"); save_data()
-            await q.answer("📌 تم التثبيت" if it["pin"] else "تم إلغاء التثبيت", show_alert=True)
-        return
-
-    if data.startswith("padd:"):
-        _, sid, iid = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        if not it:
-            await q.answer("⚠️ القائمة غير موجودة", show_alert=True); return
-        ctx.user_data["await"] = ("packfiles", (sid, iid))
-        await safe_edit(q,
-            f"📤 أرسل الآن ملفات القائمة <b>{html.escape(it['title'])}</b> واحداً بعد الآخر\n{LINE}\n"
-            "🔸 يمكنك كتابة اسم الملف في التعليق (مثل: جودة عالية 1080p)\n"
-            "🔸 وإن لم تكتب شيئاً سأسميه تلقائياً (النسخة 1، النسخة 2 …)\n"
-            "🔸 عند الانتهاء أرسل /done")
-        return
-
-    if data.startswith("pmng:"):
-        _, sid, iid = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        if not it:
-            await q.answer("⚠️ القائمة غير موجودة", show_alert=True); return
-        await safe_edit(q, f"🧹 إدارة ملفات: <b>{html.escape(it['title'])}</b>\n{LINE}",
-                        reply_markup=pack_files_admin_kb(sec, it)); return
-
-    if data.startswith("pmv:"):
-        _, sid, iid, idx, d = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        i = int(idx)
-        if it:
-            fs = it.get("files", [])
-            j = i - 1 if d == "up" else i + 1
-            if 0 <= j < len(fs):
-                fs[i], fs[j] = fs[j], fs[i]; save_data()
+        me = await app.bot.get_me()
+        BOT_USERNAME = me.username or ""
+        log.info("Bot username: @%s", BOT_USERNAME)
+    except Exception as e:
+        log.warning("get_me failed: %s", e)
+    if not OTP_GROUP_LINK and OTP_GROUP_ID:
         try:
-            await q.edit_message_reply_markup(reply_markup=pack_files_admin_kb(sec, it))
-        except Exception:
-            pass
-        return
-
-    if data.startswith("pcov:"):
-        _, sid, iid = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        if not it:
-            await q.answer("⚠️ القائمة غير موجودة", show_alert=True); return
-        ctx.user_data["await"] = ("packcover", (sid, iid))
-        await safe_edit(q, f"🖼 أرسل الآن صورة الغلاف للقائمة <b>{html.escape(it['title'])}</b>\n{LINE}\n"
-                           "🔸 أرسل /skip لحذف الغلاف الحالي أو تجاوز الخطوة")
-        return
-
-    if data.startswith("pren:"):
-        _, sid, iid, idx = data.split(":")
-        ctx.user_data["await"] = ("packren", (sid, iid, int(idx)))
-        await safe_edit(q, "✏️ أرسل الاسم الجديد لهذا الملف:"); return
-
-    if data.startswith("pdel:"):
-        _, sid, iid, idx = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        if it and 0 <= int(idx) < len(it.get("files", [])):
-            it["files"].pop(int(idx)); save_data()
-        await q.answer("🗑 تم حذف الملف", show_alert=True)
-        try:
-            await q.edit_message_reply_markup(reply_markup=pack_files_admin_kb(sec, it))
-        except Exception:
-            pass
-        return
-
-    if data == "adm:pack":
-        await safe_edit(q, "🗂 اختر القسم الذي ستوضع فيه القائمة:", reply_markup=pick_section_kb("pack")); return
-
-    if data == "adm:panel":
-        await safe_edit(q, f"🛠 <b>{make_bold_unicode('لوحة الأدمن')}</b>\n{LINE}",
-                        reply_markup=admin_kb()); return
-
-    if data == "adm:upload":
-        await safe_edit(q, "📤 اختر القسم الذي تريد الرفع إليه:", reply_markup=pick_section_kb("upload")); return
-
-    if data == "adm:rensec":
-        await safe_edit(q, "✏️ اختر القسم لتغيير اسمه:", reply_markup=pick_section_kb("rensec")); return
-
-    if data == "adm:delsec":
-        await safe_edit(q, "🗑 اختر القسم لحذفه (سيُحذف محتواه):", reply_markup=pick_section_kb("delsec")); return
-
-    if data == "adm:manage":
-        await safe_edit(q, "🧹 اختر القسم لإدارة محتواه:", reply_markup=pick_section_kb("manage")); return
-
-    if data == "adm:order":
-        await safe_edit(q, "↕️ رتّب الأقسام:", reply_markup=order_kb()); return
-
-    if data == "adm:labels":
-        await safe_edit(q, "🏷 اضغط على الزر الذي تريد تغيير اسمه:", reply_markup=labels_kb()); return
-
-    if data == "adm:addsec":
-        ctx.user_data["await"] = ("addsec", None)
-        await safe_edit(q, "➕ أرسل اسم القسم الجديد (يمكنك وضع إيموجي في البداية):"); return
-
-    if data == "adm:backup":
-        await do_backup(ctx.bot, chat_id=q.message.chat_id, force=True)
-        if BACKUP_CHAT_ID:
-            await do_backup(ctx.bot, force=True)
-        await q.answer("💾 تم إرسال النسخة", show_alert=True); return
-
-    if data == "adm:restore":
-        ctx.user_data["await"] = ("restore", None)
-        await safe_edit(q, f"♻️ أرسل ملف <b>archive.json</b> (أو users.json) لاستعادته.\n{LINE}\n"
-                           "يمكنك إعادة توجيهه من قناة النسخ الاحتياطي."); return
-
-    if data == "adm:addadmin":
-        ctx.user_data["await"] = ("addadmin", None)
-        await safe_edit(q, "👑 أرسل ايدي المستخدم لإضافته/إزالته كأدمن:"); return
-
-    if data == "adm:forcesub":
-        ctx.user_data["await"] = ("forcesub", None)
-        await safe_edit(q, f"📢 أرسل معرّف القناة للاشتراك الإجباري (مثال: @mychannel)\n{LINE}\n"
-                           f"الحالي: <b>{S('force_sub') or '—'}</b>\nأرسل /off للتعطيل"); return
-
-    if data.startswith("adm:tg:"):
-        key = data.split(":")[2]
-        DATA["settings"][key] = not DATA["settings"].get(key)
-        save_data()
-        await q.edit_message_reply_markup(reply_markup=admin_kb()); return
-
-    if data == "adm:logs":
-        logs = DATA.get("logs", [])[-25:]
-        txt = "\n".join(f"• {time.strftime('%m-%d %H:%M', time.localtime(l['t']))} — {html.escape(l['x'])}"
-                        for l in reversed(logs)) or "—"
-        await safe_edit(q, f"🗒 <b>{make_bold_unicode('سجل النشاط')}</b>\n{LINE}\n{txt}\n{LINE}",
-                        reply_markup=admin_kb()); return
-
-    if data.startswith("adm:txt:"):
-        key = data.split(":")[2]
-        ctx.user_data["await"] = ("txt", key)
-        cur = DATA.get(key, "")
-        await safe_edit(q, f"📝 أرسل النص الجديد.\n{LINE}\nالحالي:\n<code>{html.escape(str(cur))}</code>"); return
-
-    if data == "adm:bc":
-        ctx.user_data["await"] = ("bc", None)
-        await safe_edit(q, "📣 أرسل الرسالة (نص أو وسائط) وسأبثّها لكل المستخدمين:"); return
-
-    if data == "adm:ban":
-        ctx.user_data["await"] = ("ban", None)
-        await safe_edit(q, "🚫 أرسل ايدي المستخدم لحظره أو فك حظره:"); return
-
-    if data == "adm:marq":
-        order = ["scroll", "wrap", "off"]
-        cur = S("marquee", "scroll")
-        DATA["settings"]["marquee"] = order[(order.index(cur) + 1) % 3] if cur in order else "scroll"
-        save_data()
-        names = {"scroll": "🎞 شريط متحرك", "wrap": "📃 نص كامل بأسطر صغيرة", "off": "⏹ بلا حركة (اقتصار بنقاط)"}
-        await q.answer("تم: " + names[DATA["settings"]["marquee"]], show_alert=True)
-        await safe_edit(q, f"🛠 <b>{make_bold_unicode('لوحة الأدمن')}</b>\n{LINE}", reply_markup=admin_kb()); return
-
-    if data == "adm:limit":
-        ctx.user_data["await"] = ("limit", None)
-        await safe_edit(q, "🚦 أرسل عدد التنزيلات اليومية المسموحة لكل مستخدم (0 = بلا حد):"); return
-
-    if data == "adm:banner":
-        ctx.user_data["await"] = ("banner", None)
-        await safe_edit(q, "📌 أرسل نص شريط الإعلان الذي يظهر أعلى القوائم (أو /off لإلغائه):"); return
-
-    if data == "adm:bulk":
-        await safe_edit(q, "⚡ اختر القسم للرفع المجمّع السريع:", reply_markup=pick_section_kb("bulk")); return
-
-    if data == "adm:trash":
-        tr = DATA.get("trash", [])[-15:]
-        rows = [[IB(make_bold_unicode(f"♻️ {x['item'].get('title','')[:26]}"), callback_data=f"untrash:{x['item']['id']}", style="success")] for x in tr]
-        rows.append([IB(make_bold_unicode("🧨 تفريغ السلة نهائياً"), callback_data="trash:clear", style="danger")])
-        rows.append([IB(make_bold_unicode(L("back")), callback_data="adm:panel", style="primary")])
-        await safe_edit(q, f"♻️ <b>{make_bold_unicode('سلة المحذوفات')}</b>\n{LINE}\nالعدد: <b>{len(DATA.get('trash', []))}</b>",
-                        reply_markup=InlineKeyboardMarkup(rows)); return
-
-    if data.startswith("untrash:"):
-        iid = data.split(":")[1]
-        tr = DATA.get("trash", [])
-        rec = next((x for x in tr if x["item"]["id"] == iid), None)
-        if rec:
-            sec = get_section(rec.get("sid")) or (DATA["sections"][0] if DATA["sections"] else None)
-            if sec:
-                sec["items"].append(rec["item"])
-            tr.remove(rec); save_data()
-        await q.answer("♻️ تمت الاستعادة", show_alert=True)
-        await safe_edit(q, "♻️ تمت استعادة المادة.", reply_markup=admin_kb()); return
-
-    if data == "trash:clear":
-        DATA["trash"] = []; save_data()
-        await safe_edit(q, "🧨 تم تفريغ سلة المحذوفات.", reply_markup=admin_kb()); return
-
-    if data == "adm:leader":
-        top = sorted(USERS.values(), key=lambda u: -int(u.get("points", 0)))[:15]
-        lines = [f"🎖 <b>{make_bold_unicode('المتصدرون')}</b>\n{LINE}"]
-        for i, u in enumerate(top, 1):
-            lines.append(f"{i}. {html.escape(str(u.get('username') or u.get('name') or u['id']))} — <b>{u.get('points',0)}</b> نقطة (مستوى {level_of(int(u.get('points',0)))})")
-        await safe_edit(q, "\n".join(lines) + f"\n{LINE}", reply_markup=admin_kb()); return
-
-    if data.startswith("tag:"):
-        _, sid, iid = data.split(":")
-        ctx.user_data["await"] = ("tags", (sid, iid))
-        await safe_edit(q, "🏷 أرسل الوسوم مفصولة بفاصلة (مثال: إصدار, جهاد, 1446) أو /off لحذفها:"); return
-
-    if data.startswith("hid:"):
-        _, sid, iid = data.split(":")
-        sec = get_section(sid); it = get_item(sec, iid) if sec else None
-        if it:
-            it["hidden"] = not it.get("hidden"); save_data()
-            await q.answer("🙈 أُخفيت المادة" if it["hidden"] else "👁 أصبحت ظاهرة", show_alert=True)
-        try:
-            await q.edit_message_reply_markup(reply_markup=manage_items_kb(sec))
-        except Exception:
-            pass
-        return
-
-    if data.startswith("sch:"):
-        _, sid, iid = data.split(":")
-        ctx.user_data["await"] = ("sched", (sid, iid))
-        await safe_edit(q, "⏰ أرسل وقت النشر بعد كم ساعة (مثال: 5) أو /off للنشر فوراً:"); return
-
-    if data.startswith("cpitem:"):
-        _, sid, iid = data.split(":")
-        ctx.user_data["copying"] = (sid, iid)
-        await safe_edit(q, "📑 اختر القسم الذي تريد نسخ المادة إليه:", reply_markup=pick_section_kb("copyto")); return
-
-    if data.startswith("mngexp:"):
-        sid = data.split(":")[1]
-        sec = get_section(sid)
-        if not sec:
-            return
-        body = [f"# {sec['title']}", LINE]
-        for i, it in enumerate(sorted_items(sec), 1):
-            body.append(f"{i}. [{it['type']}] {it['title']} — 👁{it.get('views',0)} 📥{it.get('dl',0)}")
-        buf = io.BytesIO("\n".join(body).encode("utf-8"))
-        buf.name = f"{sid}_list.txt"
-        await ctx.bot.send_document(q.message.chat_id, document=buf, filename=buf.name,
-                                    caption=f"📄 قائمة {sec['title']}")
-        return
-
-    if data.startswith("secst:"):
-        sid = data.split(":")[1]
-        sec = get_section(sid)
-        if not sec:
-            return
-        items = sec["items"]
-        top = sorted(items, key=lambda i: -int(i.get("dl", 0)))[:10]
-        det = "\n".join(f"{n}. {html.escape(i['title'][:30])} — 📥{i.get('dl',0)} 👁{i.get('views',0)}" for n, i in enumerate(top, 1)) or "—"
-        await safe_edit(q, f"📊 <b>{html.escape(sec['title'])}</b>\n{LINE}\n"
-                           f"📦 المواد: <b>{len(items)}</b> • 🙈 مخفية: <b>{sum(1 for i in items if i.get('hidden'))}</b>\n"
-                           f"📥 تنزيلات: <b>{sum(int(i.get('dl',0)) for i in items)}</b>\n{LINE}\n{det}",
-                        reply_markup=admin_kb()); return
-
-    if data.startswith("secpw:"):
-        sid = data.split(":")[1]
-        ctx.user_data["await"] = ("secpw", sid)
-        await safe_edit(q, "🔐 أرسل كلمة المرور لهذا القسم (أو /off لإزالة القفل):"); return
-
-    if data.startswith("sechid:"):
-        sid = data.split(":")[1]
-        sec = get_section(sid)
-        if sec:
-            sec["hidden"] = not sec.get("hidden"); save_data()
-            await q.answer("🙈 أُخفي القسم" if sec["hidden"] else "👁 أصبح ظاهراً", show_alert=True)
-        await safe_edit(q, f"🧹 إدارة: {sec['title']}\n{LINE}", reply_markup=manage_items_kb(sec, 0)); return
-
-    if data == "adm:users":
-        lines = [f"👥 <b>{make_bold_unicode('المستخدمون')}</b>\n{LINE}"]
-        for u in list(USERS.values())[-30:]:
-            mark = "🚫" if u.get("banned") else "✅"
-            lines.append(f"{mark} <code>{u['id']}</code> — {html.escape(str(u.get('username') or u.get('name') or '—'))}")
-        lines.append(LINE)
-        await safe_edit(q, "\n".join(lines), reply_markup=admin_kb()); return
-
-    if data == "adm:stats":
-        total = sum(len(s["items"]) for s in DATA["sections"])
-        by = {}
-        views = 0
-        for s in DATA["sections"]:
-            for it in s["items"]:
-                by[it["type"]] = by.get(it["type"], 0) + 1
-                views += int(it.get("views", 0))
-        det = "\n".join(f"{TYPE_EMOJI.get(k,'📎')} {k}: <b>{v}</b>" for k, v in by.items()) or "—"
-        day = int(time.time()) - 86400
-        active = sum(1 for u in USERS.values() if u.get("last", 0) > day)
-        txt = (f"📊 <b>{make_bold_unicode('إحصائيات الأرشيف')}</b>\n{LINE}\n"
-               f"👥 المستخدمون: <b>{len(USERS)}</b> • نشط اليوم: <b>{active}</b>\n"
-               f"🗂 الأقسام: <b>{len(DATA['sections'])}</b>\n"
-               f"📦 إجمالي المواد: <b>{total}</b> • 👁 المشاهدات: <b>{views}</b>\n{LINE}\n{det}\n{LINE}")
-        await safe_edit(q, txt, reply_markup=admin_kb()); return
-
-    if data.startswith("adm:delitem:"):
-        _, _, sid, iid = data.split(":")
-        sec = get_section(sid)
-        if sec:
-            gone = get_item(sec, iid)
-            if gone:
-                DATA.setdefault("trash", []).append({"sid": sid, "t": int(time.time()), "item": gone})
-                DATA["trash"] = DATA["trash"][-50:]
-            sec["items"] = [i for i in sec["items"] if i["id"] != iid]
-            save_data(); add_log(f"حذف مادة {iid} من {sec['title']} (إلى سلة المحذوفات)")
-        await q.answer("🗑 تم الحذف", show_alert=True)
-        try:
-            await q.edit_message_reply_markup(reply_markup=manage_items_kb(sec))
-        except Exception:
-            pass
-        return
-
-    if data.startswith("mng:"):
-        _, sid, page = data.split(":")
-        sec = get_section(sid)
-        await safe_edit(q, f"🧹 إدارة: {sec['title']}\n{LINE}", reply_markup=manage_items_kb(sec, int(page))); return
-
-    if data.startswith("ren:"):
-        _, sid, iid = data.split(":")
-        ctx.user_data["await"] = ("renitem", (sid, iid))
-        await safe_edit(q, "✏️ أرسل العنوان الجديد لهذه المادة:"); return
-
-    if data.startswith("mvitem:"):
-        _, sid, iid = data.split(":")
-        ctx.user_data["moving"] = (sid, iid)
-        await safe_edit(q, "↔️ اختر القسم الذي تريد نقل المادة إليه:", reply_markup=pick_section_kb("moveto")); return
-
-    if data.startswith("mv:"):
-        _, direction, sid = data.split(":")
-        idx = next((i for i, s in enumerate(DATA["sections"]) if s["id"] == sid), None)
-        if idx is not None:
-            new = idx - 1 if direction == "up" else idx + 1
-            if 0 <= new < len(DATA["sections"]):
-                DATA["sections"][idx], DATA["sections"][new] = DATA["sections"][new], DATA["sections"][idx]
-                save_data()
-        await q.edit_message_reply_markup(reply_markup=order_kb()); return
-
-    if data.startswith("lbl:"):
-        key = data.split(":")[1]
-        ctx.user_data["await"] = ("label", key)
-        await safe_edit(q, f"🏷 أرسل الاسم الجديد للزر <code>{key}</code>\nالحالي: <b>{html.escape(L(key))}</b>"); return
-
-    if data.startswith("pick:"):
-        _, action, sid = data.split(":")
-        sec = get_section(sid)
-        if not sec:
-            await safe_edit(q, "⚠️ القسم غير موجود."); return
-
-        if action == "upload":
-            ctx.user_data["await"] = ("upload", sid)
-            await safe_edit(q,
-                f"📤 أرسل الآن المحتوى إلى قسم <b>{html.escape(sec['title'])}</b>\n{LINE}\n"
-                "🎬 فيديو • 🎧 صوت • 🖼 صورة • 📄 ملف • 🎙 بصمة • 🎞 GIF • 📝 نص\n"
-                "يمكنك إرسال عدة عناصر متتالية، وعند الانتهاء أرسل /done")
-        elif action == "pack":
-            ctx.user_data["await"] = ("packname", sid)
-            await safe_edit(q,
-                f"🗂 أرسل اسم القائمة التي ستظهر في قسم <b>{html.escape(sec['title'])}</b>\n{LINE}\n"
-                "مثال: إصدار «الفتح المبين» — عدة جودات")
-        elif action == "bulk":
-            ctx.user_data["await"] = ("bulk", sid)
-            ctx.user_data["bulkn"] = 0
-            await safe_edit(q,
-                f"⚡ الرفع المجمّع إلى <b>{html.escape(sec['title'])}</b>\n{LINE}\n"
-                "أرسل الملفات تتابعاً بسرعة — تُسمّى تلقائياً إن لم تكتب تعليقاً.\nوعند الانتهاء /done")
-        elif action == "copyto":
-            src = ctx.user_data.pop("copying", None)
-            if src:
-                osid, iid = src
-                osec = get_section(osid); it = get_item(osec, iid) if osec else None
-                if it:
-                    cp = json.loads(json.dumps(it)); cp["id"] = next_id("i"); cp["ts"] = int(time.time())
-                    sec["items"].append(cp); save_data(); add_log(f"نسخ مادة إلى {sec['title']}")
-            await safe_edit(q, "✅ تم نسخ المادة.", reply_markup=admin_kb())
-        elif action == "rensec":
-            ctx.user_data["await"] = ("rensec", sid)
-            await safe_edit(q, f"✏️ أرسل الاسم الجديد للقسم <b>{html.escape(sec['title'])}</b>")
-        elif action == "delsec":
-            DATA["sections"] = [s for s in DATA["sections"] if s["id"] != sid]
-            save_data(); add_log("حذف قسم")
-            await safe_edit(q, f"🗑 تم حذف القسم.\n{LINE}", reply_markup=admin_kb())
-        elif action == "manage":
-            await safe_edit(q, f"🧹 إدارة: {sec['title']}\n{LINE}", reply_markup=manage_items_kb(sec, 0))
-        elif action == "moveto":
-            src = ctx.user_data.pop("moving", None)
-            if src:
-                osid, iid = src
-                osec = get_section(osid); it = get_item(osec, iid) if osec else None
-                if it:
-                    osec["items"] = [i for i in osec["items"] if i["id"] != iid]
-                    sec["items"].append(it); save_data()
-                    add_log(f"نقل مادة إلى {sec['title']}")
-            await safe_edit(q, "✅ تم نقل المادة.", reply_markup=admin_kb())
-        return
-
-# ══════════════════ MESSAGES ══════════════════
-async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg:
-        return
-    u = note_user(update.effective_user)
-    if u.get("banned"):
-        return
-    uid = update.effective_user.id
-    text = (msg.text or "").strip()
-    if S("maintenance") and not is_admin(uid):
-        await msg.reply_text("🔧 البوت في وضع الصيانة مؤقتاً."); return
-
-    # ── حالات انتظار الأدمن ──
-    waiting = ctx.user_data.get("await")
-    if waiting and is_admin(uid):
-        kind, payload = waiting
-
-        if text == "/done":
-            ctx.user_data.pop("await", None)
-            if BACKUP_CHAT_ID:
-                await do_backup(ctx.bot, force=True)
-            await msg.reply_text(f"✅ تم الإنهاء (وتم حفظ نسخة احتياطية).\n{LINE}", reply_markup=admin_kb()); return
-
-        if kind == "limit":
-            try:
-                DATA["settings"]["daily_limit"] = max(0, int(text))
-            except ValueError:
-                await msg.reply_text("⚠️ أرسل رقماً."); return
-            save_data(); ctx.user_data.pop("await", None)
-            await msg.reply_text("✅ تم تحديث حد التنزيل اليومي.", reply_markup=admin_kb()); return
-
-        if kind == "banner":
-            DATA["settings"]["banner"] = "" if text == "/off" else text
-            save_data(); ctx.user_data.pop("await", None)
-            await msg.reply_text("✅ تم تحديث شريط الإعلان.", reply_markup=admin_kb()); return
-
-        if kind == "tags":
-            sid, iid = payload
-            sec = get_section(sid); it = get_item(sec, iid) if sec else None
-            if it:
-                it["tags"] = [] if text == "/off" else [t.strip() for t in text.replace("،", ",").split(",") if t.strip()][:8]
-                save_data()
-            ctx.user_data.pop("await", None)
-            await msg.reply_text("🏷 تم تحديث الوسوم.", reply_markup=admin_kb()); return
-
-        if kind == "sched":
-            sid, iid = payload
-            sec = get_section(sid); it = get_item(sec, iid) if sec else None
-            if it:
-                if text == "/off":
-                    it["publish_at"] = 0
-                else:
-                    try:
-                        it["publish_at"] = int(time.time()) + int(float(text) * 3600)
-                    except ValueError:
-                        await msg.reply_text("⚠️ أرسل عدد الساعات (مثال: 3)."); return
-                save_data()
-            ctx.user_data.pop("await", None)
-            await msg.reply_text("⏰ تم ضبط وقت النشر.", reply_markup=admin_kb()); return
-
-        if kind == "secpw":
-            sec = get_section(payload)
-            if sec:
-                sec["pw"] = "" if text == "/off" else text.strip()
-                save_data()
-            ctx.user_data.pop("await", None)
-            await msg.reply_text("🔐 تم تحديث قفل القسم.", reply_markup=admin_kb()); return
-
-        if kind == "bulk":
-            sec = get_section(payload)
-            if not sec:
-                ctx.user_data.pop("await", None)
-                await msg.reply_text("⚠️ القسم غير موجود."); return
-            t, fid, cap = detect_media(msg)
-            if not t:
-                await msg.reply_text("⚠️ نوع غير مدعوم."); return
-            ctx.user_data["bulkn"] = int(ctx.user_data.get("bulkn", 0)) + 1
-            title = ((cap or "").split("\n")[0][:120] or f"{sec['title']} — {ctx.user_data['bulkn']}")
-            it = {"id": next_id("i"), "type": t, "file_id": fid, "title": title,
-                  "caption": cap if t != "text" else "", "ts": int(time.time()),
-                  "views": 0, "dl": 0, "pin": False, "tags": [], "hidden": False, "publish_at": 0}
-            sec["items"].append(it); save_data()
-            await notify_new(ctx.bot, sec, it)
-            await msg.reply_text(make_bold_unicode(f"⚡ {ctx.user_data['bulkn']} — {title}"))
-            return
-
-        if kind == "restore":
-            doc = msg.document
-            if not doc:
-                await msg.reply_text("⚠️ أرسل ملف JSON."); return
-            try:
-                f = await doc.get_file()
-                raw = await f.download_as_bytearray()
-                payload_obj = json.loads(bytes(raw).decode("utf-8"))
-            except Exception as e:
-                await msg.reply_text(f"⚠️ ملف غير صالح: {e}"); return
-            if isinstance(payload_obj, dict) and "sections" in payload_obj:
-                apply_restore(payload_obj, "data")
-                await msg.reply_text("♻️ تمت استعادة الأرشيف بنجاح ✅", reply_markup=admin_kb())
-            elif isinstance(payload_obj, dict):
-                apply_restore(payload_obj, "users")
-                await msg.reply_text("♻️ تمت استعادة المستخدمين ✅", reply_markup=admin_kb())
-            else:
-                await msg.reply_text("⚠️ صيغة غير معروفة.")
-            ctx.user_data.pop("await", None)
-            add_log("استعادة نسخة احتياطية")
-            return
-
-        if kind == "upload":
-            sec = get_section(payload)
-            if not sec:
-                ctx.user_data.pop("await", None)
-                await msg.reply_text("⚠️ القسم غير موجود."); return
-            t, fid, cap = detect_media(msg)
-            if not t:
-                await msg.reply_text("⚠️ نوع غير مدعوم."); return
-            title = (cap or "بدون عنوان").split("\n")[0][:120]
-            sec["items"].append({
-                "id": next_id("i"), "type": t, "file_id": fid,
-                "title": title, "caption": cap if t != "text" else "",
-                "ts": int(time.time()), "views": 0, "pin": False,
-            })
-            save_data(); add_log(f"رفع مادة إلى {sec['title']}")
-            await notify_new(ctx.bot, sec, sec["items"][-1])
-            await msg.reply_text(
-                make_bold_unicode(f"✅ أُضيفت المادة إلى {sec['title']} ({len(sec['items'])})") +
-                "\nأرسل التالي أو /done للإنهاء")
-            return
-
-        if kind == "packname":
-            sec = get_section(payload)
-            if not sec:
-                ctx.user_data.pop("await", None)
-                await msg.reply_text("⚠️ القسم غير موجود."); return
-            iid = next_id("i")
-            sec["items"].append({
-                "id": iid, "type": "pack", "file_id": None, "cover": None,
-                "title": (text or "قائمة جديدة")[:120], "caption": "",
-                "files": [], "ts": int(time.time()), "views": 0, "pin": False,
-            })
-            save_data()
-            ctx.user_data["await"] = ("packcover", (payload, iid))
-            await msg.reply_text(
-                f"✅ تم إنشاء القائمة: <b>{html.escape(text)}</b>\n{LINE}\n"
-                "🖼 أرسل الآن <b>صورة الغلاف</b> التي ستظهر مع الاسم قبل الجودات\n"
-                "🔸 أو أرسل /skip للتجاوز بدون غلاف",
-                parse_mode=ParseMode.HTML)
-            return
-
-        if kind == "packcover":
-            sid, iid = payload
-            sec = get_section(sid); it = get_item(sec, iid) if sec else None
-            if not it:
-                ctx.user_data.pop("await", None)
-                await msg.reply_text("⚠️ القائمة غير موجودة."); return
-            if text == "/skip":
-                it["cover"] = None; save_data()
-            elif msg.photo:
-                it["cover"] = msg.photo[-1].file_id; save_data()
-            elif msg.video and msg.video.thumbnail:
-                it["cover"] = msg.video.thumbnail.file_id; save_data()
-            else:
-                await msg.reply_text("⚠️ أرسل صورة للغلاف أو /skip للتجاوز."); return
-            ctx.user_data["await"] = ("packfiles", (sid, iid))
-            await msg.reply_text(
-                f"{'✅ تم حفظ الغلاف' if it.get('cover') else '⏭ بدون غلاف'}\n{LINE}\n"
-                "📤 أرسل الآن ملفات القائمة واحداً بعد الآخر (فيديو بجودات مختلفة مثلاً)\n"
-                "🔸 اكتب اسم/الجودة في التعليق (مثل: جودة 1080p) أو اتركه فأسميه تلقائياً\n"
-                "🔸 عند الانتهاء أرسل /done",
-                parse_mode=ParseMode.HTML)
-            return
-
-        if kind == "packfiles":
-            sid, iid = payload
-            sec = get_section(sid); it = get_item(sec, iid) if sec else None
-            if not it:
-                ctx.user_data.pop("await", None)
-                await msg.reply_text("⚠️ القائمة غير موجودة."); return
-            t, fid, cap = detect_media(msg)
-            if not t or t == "text":
-                await msg.reply_text("⚠️ أرسل ملفاً (فيديو/صوت/صورة/ملف)."); return
-            it.setdefault("files", [])
-            label = (msg.caption or "").split("\n")[0].strip()[:80] or f"النسخة {len(it['files']) + 1}"
-            it["files"].append({"type": t, "file_id": fid, "label": label, "ts": int(time.time())})
-            save_data()
-            await msg.reply_text(
-                make_bold_unicode(f"✅ أُضيف «{label}» إلى القائمة {it['title']} ({len(it['files'])})") +
-                "\nأرسل الملف التالي أو /done للإنهاء")
-            return
-
-        if kind == "packren":
-            sid, iid, idx = payload
-            sec = get_section(sid); it = get_item(sec, iid) if sec else None
-            if it and 0 <= idx < len(it.get("files", [])):
-                it["files"][idx]["label"] = (text or it["files"][idx]["label"])[:80]
-                save_data()
-            ctx.user_data.pop("await", None)
-            await msg.reply_text("✅ تم تعديل اسم الملف.", reply_markup=admin_kb()); return
-
-        if kind == "addsec":
-            DATA["sections"].append({"id": next_id("s"), "title": text or "قسم جديد", "desc": "", "items": []})
-            save_data(); ctx.user_data.pop("await", None); add_log("إضافة قسم")
-            await msg.reply_text(f"✅ تمت إضافة القسم: <b>{html.escape(text)}</b>",
-                                 parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
-
-        if kind == "rensec":
-            sec = get_section(payload)
-            if sec:
-                sec["title"] = text or sec["title"]; save_data()
-            ctx.user_data.pop("await", None)
-            await msg.reply_text(f"✅ تم تغيير الاسم إلى: <b>{html.escape(text)}</b>",
-                                 parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
-
-        if kind == "renitem":
-            sid, iid = payload
-            sec = get_section(sid); it = get_item(sec, iid) if sec else None
-            if it:
-                it["title"] = text[:120]; save_data()
-            ctx.user_data.pop("await", None)
-            await msg.reply_text("✅ تم تعديل العنوان.", reply_markup=admin_kb()); return
-
-        if kind == "txt":
-            DATA[payload] = text; save_data(); ctx.user_data.pop("await", None)
-            await msg.reply_text("✅ تم تحديث النص.", reply_markup=admin_kb()); return
-
-        if kind == "label":
-            DATA["labels"][payload] = text; save_data(); ctx.user_data.pop("await", None)
-            await msg.reply_text("✅ تم تحديث اسم الزر.", reply_markup=main_kb(uid)); return
-
-        if kind == "forcesub":
-            DATA["settings"]["force_sub"] = "" if text == "/off" else text.strip()
-            save_data(); ctx.user_data.pop("await", None)
-            await msg.reply_text("✅ تم تحديث الاشتراك الإجباري.", reply_markup=admin_kb()); return
-
-        if kind == "addadmin":
-            try:
-                tid = int(text.strip())
-            except ValueError:
-                await msg.reply_text("⚠️ أرسل رقم ايدي صحيح."); return
-            adm = DATA.setdefault("admins", [])
-            if tid in adm:
-                adm.remove(tid); out = "تمت إزالة الأدمن"
-            else:
-                adm.append(tid); out = "تمت إضافة الأدمن"
-            save_data(); ctx.user_data.pop("await", None)
-            await msg.reply_text(f"👑 {out}: <code>{tid}</code>", parse_mode=ParseMode.HTML,
-                                 reply_markup=admin_kb()); return
-
-        if kind == "ban":
-            tid = text.strip()
-            tu = USERS.get(tid)
-            if not tu:
-                await msg.reply_text("⚠️ لم أجد هذا المستخدم."); return
-            tu["banned"] = not tu.get("banned"); save_users(); ctx.user_data.pop("await", None)
-            await msg.reply_text(f"{'🚫 تم الحظر' if tu['banned'] else '✅ تم فك الحظر'} — <code>{tid}</code>",
-                                 parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
-
-        if kind == "bc":
-            ctx.user_data.pop("await", None)
-            ok = fail = 0
-            for key in list(USERS.keys()):
-                if USERS[key].get("banned"):
-                    continue
-                try:
-                    await ctx.bot.copy_message(int(key), msg.chat_id, msg.message_id)
-                    ok += 1
-                except Exception:
-                    fail += 1
-            add_log(f"بث رسالة ({ok} نجاح / {fail} فشل)")
-            await msg.reply_text(f"📣 تم البث\n{LINE}\n✅ {ok} • ❌ {fail}", reply_markup=admin_kb()); return
-
-    # ── فتح قسم مقفل ──
-    if ctx.user_data.get("unlock"):
-        sid = ctx.user_data["unlock"]
-        sec = get_section(sid)
-        if sec and text and text.strip() == (sec.get("pw") or ""):
-            ctx.user_data.pop("unlock", None)
-            ok = ctx.user_data.setdefault("unlocked", [])
-            if sid not in ok:
-                ok.append(sid)
-            head = f"{sec['title']}\n{LINE}\n🔓 تم الفتح، بارك الله فيك.\n{LINE}"
-            m = await msg.reply_text(head, parse_mode=ParseMode.HTML, reply_markup=items_kb(sec, 0, 0))
-            start_marquee(ctx, m, lambda off=0: items_kb(sec, 0, off), items_texts(sec, 0))
-        else:
-            await msg.reply_text("🔐 كلمة المرور غير صحيحة، حاول مرة أخرى أو اضغط الأقسام.")
-        return
-
-    # ── مراسلة الإدارة ──
-    if ctx.user_data.pop("fb", None):
-        who = f"@{update.effective_user.username}" if update.effective_user.username else str(uid)
-        for a in set(list(ADMIN_IDS) + list(DATA.get("admins", []))):
-            try:
-                await ctx.bot.send_message(a, f"✉️ <b>رسالة من مستخدم</b>\n{LINE}\n👤 {html.escape(who)} — <code>{uid}</code>\n{LINE}\n{html.escape(text or '(وسائط)')}",
-                                           parse_mode=ParseMode.HTML)
-                if not text:
-                    await ctx.bot.copy_message(a, msg.chat_id, msg.message_id)
-            except Exception:
-                pass
-        award(uid, 1)
-        await msg.reply_text("✅ وصلت رسالتك للإدارة، جزاك الله خيراً."); return
-
-    # ── اشتراك إجباري للمستخدم العادي ──
-    if not is_admin(uid) and not await sub_ok(ctx.bot, uid):
-        await msg.reply_text("📢 يرجى الاشتراك في القناة أولاً:", reply_markup=sub_kb()); return
-
-    # ── بحث ──
-    if ctx.user_data.get("search"):
-        scope = ctx.user_data.pop("search")
-        pool = all_items() if scope is True else [(get_section(scope), it) for it in (get_section(scope) or {"items": []})["items"]]
-        ftype = ctx.user_data.pop("adv_type", None)
-        res = [(s, it) for s, it in pool
-               if s and text and text.lower() in (it["title"] + " " + (it.get("caption") or "") + " " + " ".join(it.get("tags") or [])).lower()
-               and not it.get("hidden") and (not ftype or it.get("type") == ftype)]
-        if not res:
-            await msg.reply_text(f"🔎 لا توجد نتائج لـ <b>{html.escape(text)}</b>", parse_mode=ParseMode.HTML); return
-        pairs = res[:20]
-        m = await msg.reply_text(f"🔎 <b>نتائج البحث</b> ({len(res)})\n{LINE}", parse_mode=ParseMode.HTML,
-                                 reply_markup=results_kb(pairs, 0))
-        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off),
-                      [f"{it['title']} • {s['title']}" for s, it in pairs])
-        return
-
-    # ── اقتراح/رسالة للأدمن ──
-    if ctx.user_data.pop("tolerate_msg", None):
-        pass
-
-    # ── أزرار الكيبورد الرئيسية ──
-    try:
-        stop_marquee(ctx, msg.chat_id)
-        new_view(msg.chat_id)
-    except Exception:
-        pass
-
-    plain = text
-    def eq(label):
-        return plain in (label, make_bold_unicode(label))
-
-    if eq(L("cart")):
-        ids = list((USERS.get(str(uid)) or {}).get("cart") or [])
-        pairs = [(s2, it2) for s2, it2 in ((find_item(i)) for i in ids) if it2]
-        rows = [[IB(btn(f"{TYPE_EMOJI.get(it2['type'],'📎')} {it2['title']}", 0),
-                    callback_data=f"itm:{s2['id']}:{it2['id']}:0", style="primary")] for s2, it2 in pairs]
-        rows = rows or [[IB(make_bold_unicode("🧺 السلة فارغة"), callback_data="noop")]]
-        if pairs:
-            rows.append([IB(make_bold_unicode("📥 إرسال كل السلة"), callback_data="cart:send", style="success"),
-                         IB(make_bold_unicode("🗑 تفريغ"), callback_data="cart:clear", style="danger")])
-        await msg.reply_text(f"🧺 <b>{make_bold_unicode('سلة التنزيل')}</b>\n{LINE}\nالعدد: <b>{len(pairs)}</b>",
-                             parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
-
-    if eq(L("tags")):
-        tags = all_tags()
-        rows = [[IB(make_bold_unicode(f"🏷 {t} ({n})"), callback_data=f"tagq:{t}", style="primary")] for t, n in list(tags.items())[:20]]
-        rows = rows or [[IB(make_bold_unicode("لا توجد وسوم بعد"), callback_data="noop")]]
-        await msg.reply_text(f"🏷 <b>{make_bold_unicode('الوسوم')}</b>\n{LINE}", parse_mode=ParseMode.HTML,
-                             reply_markup=InlineKeyboardMarkup(rows)); return
-
-    if eq(L("adv")):
-        rows = [[IB(make_bold_unicode("🔎 كل الأنواع"), callback_data="advt:all", style="success")]]
-        row = []
-        for t, e in TYPE_EMOJI.items():
-            row.append(IB(f"{e} {t}", callback_data=f"advt:{t}", style="primary"))
-            if len(row) == 3:
-                rows.append(row); row = []
-        if row:
-            rows.append(row)
-        await msg.reply_text(f"🔍 <b>{make_bold_unicode('بحث متقدم')}</b>\n{LINE}\nاختر نوع المحتوى ثم أرسل الكلمة:",
-                             parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
-
-    if eq(L("dltop")):
-        pairs = sorted(all_items(), key=lambda p: -dl_week(p[1]))[:15]
-        pairs = [(s2, it2) for s2, it2 in pairs if dl_week(it2) > 0] or pairs[:5]
-        m = await msg.reply_text(f"🏆 <b>{make_bold_unicode('الأكثر تحميلاً هذا الأسبوع')}</b>\n{LINE}",
-                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
-        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off), [i['title'] for _, i in pairs]); return
-
-    if eq(L("leader")):
-        top = sorted(USERS.values(), key=lambda u: -int(u.get("points", 0)))[:10]
-        me = USERS.get(str(uid)) or {}
-        lines = [f"🎖 <b>{make_bold_unicode('لوحة المتصدرين')}</b>\n{LINE}"]
-        for i, u in enumerate(top, 1):
-            lines.append(f"{'🥇🥈🥉'[i-1] if i <= 3 else str(i) + '.'} {html.escape(str(u.get('username') or u.get('name') or '—'))} — <b>{u.get('points',0)}</b>")
-        lines.append(LINE)
-        lines.append(f"👤 نقاطك: <b>{me.get('points',0)}</b> • مستواك: <b>{level_of(int(me.get('points',0)))}</b>")
-        await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML); return
-
-    if eq(L("hist")):
-        ids = list((USERS.get(str(uid)) or {}).get("hist") or [])
-        pairs = [(s2, it2) for s2, it2 in ((find_item(i)) for i in ids) if it2]
-        m = await msg.reply_text(f"🕓 <b>{make_bold_unicode('آخر ما شاهدت')}</b>\n{LINE}",
-                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
-        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off), [i['title'] for _, i in pairs]); return
-
-    if eq(L("feedback")):
-        ctx.user_data["fb"] = True
-        await msg.reply_text("✉️ أرسل رسالتك أو اقتراحك الآن وستصل للإدارة بإذن الله."); return
-
-    if eq(L("sections")):
-        m = await msg.reply_text(sections_header(), parse_mode=ParseMode.HTML, reply_markup=sections_kb(0, uid))
-        start_marquee(ctx, m, lambda off=0: sections_kb(off, uid),
-                      [f"{s['title']} • {len(s['items'])}" for s in DATA["sections"]])
-        return
-
-    if eq(L("new")):
-        pairs = sorted(all_items(), key=lambda p: -int(p[1].get("ts", 0)))[:15]
-        m = await msg.reply_text(f"🆕 <b>{make_bold_unicode('أحدث الإضافات')}</b>\n{LINE}",
-                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
-        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off),
-                      [f"{it['title']} • {s['title']}" for s, it in pairs]); return
-
-    if eq(L("top")):
-        pairs = sorted(all_items(), key=lambda p: -int(p[1].get("views", 0)))[:15]
-        m = await msg.reply_text(f"🔥 <b>{make_bold_unicode('الأكثر طلباً')}</b>\n{LINE}",
-                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
-        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off),
-                      [f"{it['title']} • {s['title']}" for s, it in pairs]); return
-
-    if eq(L("random")):
-        pool = all_items()
-        if not pool:
-            await msg.reply_text("📦 الأرشيف فارغ حالياً."); return
-        s, it = random.choice(pool)
-        if it["type"] == "pack":
-            head = pack_header(s, it)
-            kb = pack_kb(s, it, 0, uid)
-            if it.get("cover"):
-                await ctx.bot.send_photo(msg.chat_id, it["cover"], caption=head,
-                                         parse_mode=ParseMode.HTML, reply_markup=kb)
-            else:
-                await msg.reply_text(head, parse_mode=ParseMode.HTML, reply_markup=kb)
-        else:
-            await send_item(ctx.bot, msg.chat_id, it, item_kb(s["id"], 0, uid, it["id"]))
-        return
-
-    if eq(L("fav")):
-        favs = USERS.get(str(uid), {}).get("fav", [])
-        pairs = [(s, it) for s, it in all_items() if it["id"] in favs]
-        m = await msg.reply_text(f"⭐ <b>{make_bold_unicode('مفضلتك')}</b> ({len(pairs)})\n{LINE}",
-                                 parse_mode=ParseMode.HTML, reply_markup=results_kb(pairs, 0))
-        start_marquee(ctx, m, lambda off=0: results_kb(pairs, off),
-                      [f"{it['title']} • {s['title']}" for s, it in pairs]); return
-
-    if eq(L("about")):
-        await msg.reply_text(f"ℹ️ <b>{make_bold_unicode('حول')}</b>\n{LINE}\n{DATA['about']}\n{LINE}",
-                             parse_mode=ParseMode.HTML); return
-    if eq(L("contact")):
-        await msg.reply_text(f"📞 <b>{make_bold_unicode('تواصل')}</b>\n{LINE}\n{DATA['contact']}\n{LINE}",
-                             parse_mode=ParseMode.HTML); return
-    if eq(L("search")):
-        ctx.user_data["search"] = True
-        await msg.reply_text("🔎 أرسل كلمة البحث:"); return
-    if eq(L("admin")) and is_admin(uid):
-        await msg.reply_text(f"🛠 <b>{make_bold_unicode('لوحة الأدمن')}</b>\n{LINE}",
-                             parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
-
-    # ── رسالة عادية من مستخدم: تُحوَّل للأدمن ──
-    if text and not text.startswith("/") and not is_admin(uid):
-        for a in set(ADMIN_IDS) | set(DATA.get("admins", [])):
-            try:
-                await ctx.bot.send_message(
-                    a, f"✉️ <b>رسالة من مستخدم</b>\n{LINE}\n🆔 <code>{uid}</code>\n"
-                       f"{html.escape(text[:500])}", parse_mode=ParseMode.HTML)
-            except Exception:
-                pass
-        await msg.reply_text("✅ وصلت رسالتك للإدارة، جزاك الله خيراً.", reply_markup=main_kb(uid)); return
-
-    await msg.reply_text(welcome_text(), parse_mode=ParseMode.HTML, reply_markup=main_kb(uid))
-
-# ══════════════════ MAIN ══════════════════
-async def on_startup(app: Application):
-    if BACKUP_CHAT_ID:
-        try:
-            await app.bot.send_message(BACKUP_CHAT_ID,
-                f"♻️ <b>تم تشغيل البوت</b>\n{LINE}\n"
-                f"📦 المواد: <b>{sum(len(s['items']) for s in DATA['sections'])}</b>\n"
-                f"👥 المستخدمون: <b>{len(USERS)}</b>\n{LINE}\n"
-                "إن كان الأرشيف فارغاً بعد إعادة التشغيل، أرسل /restore ثم أعد توجيه آخر ملف archive.json.",
-                parse_mode=ParseMode.HTML)
+            OTP_GROUP_LINK = await app.bot.export_chat_invite_link(OTP_GROUP_ID)
+            log.info("OTP group invite link ready")
         except Exception as e:
-            log.warning("startup notice failed: %s", e)
+            log.warning("export group link failed (البوت يجب أن يكون أدمن بالجروب): %s", e)
+    try:
+        report = await asyncio.to_thread(logins_report)
+        info = (f"{report}\n🤖 <b>Bot</b>: @{BOT_USERNAME or '—'}\n"
+                f"🔔 <b>Group link</b>: {OTP_GROUP_LINK or '⚪ غير متاح'}")
+        for aid in ADMIN_IDS:
+            try: await app.bot.send_message(aid, info, parse_mode=ParseMode.HTML)
+            except Exception: pass
+    except Exception as e:
+        log.warning("startup report failed: %s", e)
+
+# ═══════════════════════════════════════════════════════════════
+# 🔧 خادم ويب صغير للحفاظ على البوت نشطاً
+# ═══════════════════════════════════════════════════════════════
 from flask import Flask
 import threading
 import os
@@ -1991,21 +1682,22 @@ def run_web():
     web_app.run(host='0.0.0.0', port=port)
 
 threading.Thread(target=run_web, daemon=True).start()
+
+# ═══════════════════════════════════════════════════════════════
+
 def main():
-    if not BOT_TOKEN:
-        raise SystemExit("⚠️ ضع BOT_TOKEN في أعلى الملف.")
+    zyron_login()
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("admin", cmd_admin))
-    app.add_handler(CommandHandler("id", cmd_id))
-    app.add_handler(CommandHandler("backup", cmd_backup))
-    app.add_handler(CommandHandler("restore", cmd_restore))
-    app.add_handler(CallbackQueryHandler(on_cb))
-    app.add_handler(MessageHandler(filters.ALL & ~filters.StatusUpdate.ALL, on_message))
-    if app.job_queue and BACKUP_CHAT_ID:
-        app.job_queue.run_repeating(job_backup, interval=AUTO_BACKUP_MIN * 60, first=120)
-    log.info("Archive bot v2 started ✅")
-    app.run_polling(drop_pending_updates=True)
+    app.add_handler(CommandHandler("lang", cmd_lang))
+    app.add_handler(CommandHandler("last", cmd_last))
+    app.add_handler(CommandHandler("pm",   cmd_pm))
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.Document.ALL, on_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    log.info("🚀 OTP APP IBRAHIM started.")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
