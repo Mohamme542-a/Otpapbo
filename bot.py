@@ -70,7 +70,7 @@ OTP_GROUP_ID = -1003921031641
 OTP_GROUP_LINK = "https://t.me/shHsu77"
 OTP_GROUP_TITLE = "🔔 جروب OTP"
 MASK_GROUP_CODE = False
-BOT_USERNAME = "@Otptestre_bot"
+BOT_USERNAME = "@appIbrahi5m_bot"
 
 REQUIRED_CHANNELS = [{"id": -1003974736720, "title": "القناة الأولى", "url": "https://t.me/gvbhvc669"}]
 FORCE_JOIN_GROUP = True
