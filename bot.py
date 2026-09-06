@@ -305,8 +305,8 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
 app.add_handler(CallbackQueryHandler(on_callback))
-app.add_handler(MessageHandler(PTBFilters.TEXT & \~PTBFilters.COMMAND, handle_inputs))
-
+app.add_handler(MessageHandler(PTBFilters.TEXT & ~PTBFilters.COMMAND, handle_inputs))
+        
 print("🚀 البوت يعمل...")
     app.run_polling()
 
