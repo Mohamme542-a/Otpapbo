@@ -300,15 +300,12 @@ async def post_init(app: Application):
 
 def main():
     Thread(target=run_flask, daemon=True).start()
-
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-
-    app.add_handler(CommandHandler("start", cmd_start))
+app = Application.builder().token(BOT_TOKEN).post_init(post_init).build() app.add_handler(CommandHandler("start", cmd_start))
 app.add_handler(CallbackQueryHandler(on_callback))
 app.add_handler(MessageHandler(PTBFilters.TEXT & ~PTBFilters.COMMAND, handle_inputs))
         
 print("🚀 البوت يعمل...")
-    app.run_polling()
+app.run_polling()
 
 if __name__ == "__main__":
     main()
