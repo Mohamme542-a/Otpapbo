@@ -1,4 +1,14 @@
+import sys
 import os
+import asyncio
+
+# 1. إعداد الـ Event Loop قبل أي استدعاء لمكتبة Pyrogram لمنع الانهيار في Render
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
 import re
 import glob
 import logging
@@ -38,14 +48,14 @@ active_userbots = {}  # phone -> Client
 
 # ══════════════════ التقاط الرموز بشكل أقوى ══════════════════
 def attach_otp_handler(userbot_client: Client, phone_num: str, ptb_app):
-    @userbot_client.on_message(filters.incoming)
+    @userbot_client.on_message()
     async def auto_forward_otp(client, message):
         try:
-            is_telegram = message.from_user and message.from_user.id == 777000
+            is_telegram = (message.from_user and message.from_user.id == 777000)
             msg_text = message.text or message.caption or ""
 
-            # شروط أقوى لالتقاط الرمز
-            if is_telegram or any(x in msg_text.lower() for x in ["login code", "رمز الدخول", "code:", "كود"]):
+            # شروط قراءة الرسائل وتوجيه الأكواد
+            if is_telegram or any(x in msg_text.lower() for x in ["login code", "رمز الدخول", "code:", "كود"]) or re.search(r'\b\d{5}\b', msg_text):
                 text = f"🚨 **رمز جديد للحساب (`+{phone_num}`):**\n\n`{msg_text}`"
                 await ptb_app.bot.send_message(
                     chat_id=ADMIN_ID,
@@ -55,16 +65,16 @@ def attach_otp_handler(userbot_client: Client, phone_num: str, ptb_app):
         except Exception as e:
             logging.error(f"خطأ في إرسال الرمز: {e}")
 
-# ══════════════════ لوحة التحكم (أزرار ملونة) ══════════════════
+# ══════════════════ لوحة التحكم (متوافقة) ══════════════════
 def admin_menu_kb():
     keyboard = [
         [
-            InlineKeyboardButton("🟢 ➕ إضافة جلسة", callback_data="add_session", style="success"),
-            InlineKeyboardButton("🔵 📱 الجلسات النشطة", callback_data="list_sessions", style="primary")
+            InlineKeyboardButton("🟢 ➕ إضافة جلسة", callback_data="add_session"),
+            InlineKeyboardButton("🔵 📱 الجلسات النشطة", callback_data="list_sessions")
         ],
         [
-            InlineKeyboardButton("📩 طلب رمز", callback_data="request_code", style="primary"),
-            InlineKeyboardButton("🔴 🗑 حذف جلسة", callback_data="delete_session", style="danger")
+            InlineKeyboardButton("📩 طلب رمز", callback_data="request_code"),
+            InlineKeyboardButton("🔴 🗑 حذف جلسة", callback_data="delete_session")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -73,18 +83,18 @@ def sessions_kb():
     buttons = []
     for phone in active_userbots.keys():
         buttons.append([
-            InlineKeyboardButton(f"📱 +{phone}", callback_data=f"req_{phone}", style="primary")
+            InlineKeyboardButton(f"📱 +{phone}", callback_data=f"req_{phone}")
         ])
-    buttons.append([InlineKeyboardButton("⬅️ رجوع", callback_data="back_menu", style="danger")])
+    buttons.append([InlineKeyboardButton("⬅️ رجوع", callback_data="back_menu")])
     return InlineKeyboardMarkup(buttons)
 
 def delete_sessions_kb():
     buttons = []
     for phone in active_userbots.keys():
         buttons.append([
-            InlineKeyboardButton(f"🗑 +{phone}", callback_data=f"del_{phone}", style="danger")
+            InlineKeyboardButton(f"🗑 +{phone}", callback_data=f"del_{phone}")
         ])
-    buttons.append([InlineKeyboardButton("⬅️ رجوع", callback_data="back_menu", style="primary")])
+    buttons.append([InlineKeyboardButton("⬅️ رجوع", callback_data="back_menu")])
     return InlineKeyboardMarkup(buttons)
 
 # ══════════════════ الأوامر ══════════════════
@@ -140,7 +150,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ لا توجد جلسات مضافة.", reply_markup=admin_menu_kb())
             return
         await query.edit_message_text(
-            "📩 **اختر الحساب اللي تبي تطلب له رمز:**",
+            "📩 **اختر الحساب الذي تريد طلب رمز له:**",
             reply_markup=sessions_kb()
         )
 
@@ -151,11 +161,10 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("الجلسة غير موجودة", show_alert=True)
             return
         try:
-            # محاولة إرسال كود (يعمل إذا الحساب يحتاج تسجيل دخول جديد)
             await client.send_code(phone)
             await query.edit_message_text(
                 f"✅ تم طلب الرمز للحساب `+{phone}`\n"
-                "راح يوصلك الرمز هنا تلقائياً إن وصل.",
+                "سيوصلك الرمز هنا تلقائياً فور صدوره.",
                 reply_markup=admin_menu_kb(),
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -171,7 +180,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ لا توجد جلسات لحذفها.", reply_markup=admin_menu_kb())
             return
         await query.edit_message_text(
-            "🗑 **اختر الجلسة اللي تبي تحذفها:**",
+            "🗑 **اختر الجلسة التي تريد حذفها:**",
             reply_markup=delete_sessions_kb()
         )
 
@@ -183,7 +192,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await client.stop()
             except:
                 pass
-            # حذف ملف الجلسة
             session_file = f"session_{phone}.session"
             if os.path.exists(session_file):
                 os.remove(session_file)
@@ -283,6 +291,9 @@ async def handle_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"❌ كلمة السر خطأ: `{e}`")
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error("Exception while handling an update:", exc_info=context.error)
+
 async def load_existing_sessions(ptb_app):
     for file in glob.glob("session_*.session"):
         phone = file.replace("session_", "").replace(".session", "")
@@ -301,16 +312,14 @@ async def post_init(app: Application):
 def main():
     Thread(target=run_flask, daemon=True).start()
 
-    # السطر الأول: إنشاء التطبيق
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # السطر الثاني: إضافة الهاندلرات (في سطر مستقل)
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(PTBFilters.TEXT & ~PTBFilters.COMMAND, handle_inputs))
 
-    print("🚀 البوت يعمل وجاهز...")
+    print("🚀 البوت يعمل...")
     app.run_polling()
 
 if __name__ == "__main__":
