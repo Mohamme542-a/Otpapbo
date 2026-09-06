@@ -22,7 +22,7 @@ from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeEx
 # ========== الإعدادات ==========
 API_ID = int(os.environ.get("API_ID", 35821117))
 API_HASH = os.environ.get("API_HASH", "302151e03e2373058bffdd3cc7459997")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "ضع_التوكن_هنا")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8893399262:AAGQXKaZI-na_mTAoO4RKqwlDoQ6h3f89h0")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 8619521184))
 
 logging.basicConfig(level=logging.INFO)
