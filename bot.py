@@ -39,7 +39,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 # =====================================================================
 # ⚠️ لا تكتب التوكن مباشرة هنا أبدًا — أي شخص يرى الملف يمكنه التحكم ببوتك.
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8893399262:AAGQXKaZI-na_mTAoO4RKqwlDoQ6h3f89h0").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8893399262:AAE0y7T1fSeL_rxbNflZcdNfIGuAx-pYSPk").strip()
 
 ADMIN_IDS = [
     int(x) for x in os.getenv("ADMIN_IDS", "8802164611,8619521184").replace(" ", "").split(",")
@@ -907,19 +907,28 @@ async def on_error(update, context):
 # =====================================================================
 # 🚀 تشغيل البوت
 # =====================================================================
-from flask import Flask
-import threading
 import os
+from threading import Thread
+from flask import Flask
 
-web_app = Flask(name)
-@web_app.route('/')
-def home(): return "Bot is Running! 🚀"
+app = Flask(__name__)
 
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    web_app.run(host='0.0.0.0', port=port)
+@app.route('/')
+def home():
+    return "Bot is running!"
 
-threading.Thread(target=run_web, daemon=True).start()
+def run_flask():
+    # Render يمرر المنفذ تلقائياً عبر متغير PORT
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+# تشغيل Flask في Thread منفصلة حتى لا يعطل Pyrogram
+if __name__ == "__main__":
+    Thread(target=run_flask).start()
+    
+    # تشغيل بوت Pyrogram هنا
+    app_pyrogram.run()  # استبدل app_pyrogram باسم كائن Pyrogram لديك
+  
 def main():
     if not BOT_TOKEN:
         raise SystemExit(
