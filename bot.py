@@ -44,7 +44,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 # ⚠️ لا تكتب التوكن مباشرة هنا أبدًا — أي شخص يرى الملف يمكنه التحكم ببوتك.
 # ضعه في متغير بيئة قبل التشغيل (انظر التعليمات بالأعلى).
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8682545541:AAHfEF3p2D_8Pg3byaGtw5CvZhZu-2Xp55k").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8893399262:AAGQXKaZI-na_mTAoO4RKqwlDoQ6h3f89h0").strip()
 
 ADMIN_IDS = [
     int(x) for x in os.getenv("ADMIN_IDS", "8619521184,8802164611,8915282966").replace(" ", "").split(",")
