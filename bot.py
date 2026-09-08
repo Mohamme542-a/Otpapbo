@@ -907,60 +907,57 @@ async def on_error(update, context):
 # =====================================================================
 # 🚀 تشغيل البوت
 # =====================================================================
-import os
+# =====================================================================
+# 🚀 تشغيل البوت مع خدمة Flask لـ Render
+# =====================================================================
 from threading import Thread
 from flask import Flask
 
-app = Flask(__name__)
+flask_app = Flask(__name__)
 
-@app.route('/')
+@flask_app.route('/')
 def home():
     return "Bot is running!"
 
 def run_flask():
-    # Render يمرر المنفذ تلقائياً عبر متغير PORT
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    flask_app.run(host="0.0.0.0", port=port)
 
-# تشغيل Flask في Thread منفصلة حتى لا يعطل Pyrogram
-if __name__ == "__main__":
-    Thread(target=run_flask).start()
-    
-    # تشغيل بوت Pyrogram هنا
-    app_pyrogram.run()  # استبدل app_pyrogram باسم كائن Pyrogram لديك
-  
+
 def main():
     if not BOT_TOKEN:
         raise SystemExit(
-            "❌ لم يتم ضبط BOT_TOKEN.\n"
-            "شغّل الأمر التالي قبل تشغيل البوت (استبدل التوكن بتوكنك الحقيقي):\n"
-            "   export BOT_TOKEN='التوكن_من_BotFather'   (لينكس/ماك)\n"
-            "   $env:BOT_TOKEN='التوكن_من_BotFather'      (ويندوز PowerShell)"
+            "❌ لم يتم ضبط BOT_TOKEN."
         )
 
     if not ADMIN_IDS:
-        log.warning("⚠️ ADMIN_IDS فارغة - لن يكون هناك أدمن للبوت. اضبط متغير البيئة ADMIN_IDS.")
+        log.warning("⚠️ ADMIN_IDS فارغة - لن يكون هناك أدمن للبوت.")
 
     load_data()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    # تشغيل سيرفر Flask في الخلفية لإبقاء Render نادماً
+    Thread(target=run_flask, daemon=True).start()
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("id", cmd_id))
-    app.add_handler(CommandHandler("cancel", cmd_cancel))
-    app.add_handler(CommandHandler("help_admin", cmd_help_admin))
-    app.add_handler(CommandHandler("users", cmd_users))
-    app.add_handler(CommandHandler("pending", cmd_pending))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
-    app.add_handler(CommandHandler("export", export_users))
-    app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(~filters.COMMAND, on_message))
-    app.add_error_handler(on_error)
+    # بناء وتشغيل تطبيق python-telegram-bot
+    telegram_app = Application.builder().token(BOT_TOKEN).build()
+
+    telegram_app.add_handler(CommandHandler("start", cmd_start))
+    telegram_app.add_handler(CommandHandler("id", cmd_id))
+    telegram_app.add_handler(CommandHandler("cancel", cmd_cancel))
+    telegram_app.add_handler(CommandHandler("help_admin", cmd_help_admin))
+    telegram_app.add_handler(CommandHandler("users", cmd_users))
+    telegram_app.add_handler(CommandHandler("pending", cmd_pending))
+    telegram_app.add_handler(CommandHandler("stats", cmd_stats))
+    telegram_app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    telegram_app.add_handler(CommandHandler("export", export_users))
+    telegram_app.add_handler(CallbackQueryHandler(on_callback))
+    telegram_app.add_handler(MessageHandler(~filters.COMMAND, on_message))
+    telegram_app.add_error_handler(on_error)
 
     log.info("✅ البوت يعمل الآن")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
     main()
+  
