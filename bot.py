@@ -1,26 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-بوت دعم تلغرام محسّن ومطوّر — نسخة قوية (v2)
+بوت دعم تلغرام محسّن ومطوّر — نسخة v3 (مصححة)
 =====================================================
-الميزات:
-  🎨 أزرار ملونة حقيقية (Telegram يدعم فقط: primary/success/danger)
-  🔒 استلام التذاكر (Claim) لمنع تكرار الرد من أكثر من أدمن
-  ⚡ تمييز التذاكر العاجلة (Priority)
-  💬 ردود جاهزة سريعة (Canned Replies) بضغطة واحدة
-  ⭐ تقييم المستخدم لجودة الدعم بعد كل رد
-  📢 بث رسالة جماعية لكل المستخدمين (Broadcast) مع تأكيد
-  🛡️ حماية من الإزعاج (Anti-flood / Rate limiting)
-  🔑 التوكن ومعرفات الأدمن تُقرأ من متغيرات البيئة (لا تُكتب داخل الكود أبدًا)
+إصلاحات هذه النسخة:
+  🐞 إصلاح جذري: أزرار الرد (المستخدم والأدمن) لم تكن تُعرَف عند الضغط
+     عليها لأن نص الزر المرسل من تيليجرام يحتوي أيقونة + حروف عريضة
+     يونيكود، بينما كانت المقارنة تتم مع النص الأصلي بدون تنسيق —
+     فتفشل كل مقارنة ويُعامَل الضغط كرسالة عادية. تم الآن حساب نص
+     الزر الفعلي (LABEL) ومقارنته بشكل صحيح.
+  ⭐ تمت إزالة نظام التقييم بالكامل بناءً على الطلب.
+  👤 عرض اسم المستخدم/username بوضوح بدل الاعتماد على الأيدي فقط:
+     يُعرض @username إن وُجد، وإلا يُعرض الاسم الظاهر في حسابه.
+  🎬 دعم اختياري لستيكرات متحركة (ترحيب + عند الرد على المستخدم).
 
 التثبيت: pip install -r requirements.txt
-التشغيل (لينكس/ماك):
+التشغيل:
     export BOT_TOKEN='التوكن_من_BotFather'
     export ADMIN_IDS='123456789,987654321'
-    python support_bot_enhanced.py
-
-التشغيل (ويندوز - PowerShell):
-    $env:BOT_TOKEN='التوكن_من_BotFather'
-    $env:ADMIN_IDS='123456789,987654321'
     python support_bot_enhanced.py
 """
 import csv
@@ -42,12 +38,11 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 # 🔧 1. إعدادات البوت الأساسية
 # =====================================================================
 # ⚠️ لا تكتب التوكن مباشرة هنا أبدًا — أي شخص يرى الملف يمكنه التحكم ببوتك.
-# ضعه في متغير بيئة قبل التشغيل (انظر التعليمات بالأعلى).
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8893399262:AAGQXKaZI-na_mTAoO4RKqwlDoQ6h3f89h0").strip()
 
 ADMIN_IDS = [
-    int(x) for x in os.getenv("ADMIN_IDS", "8619521184,8802164611,8915282966").replace(" ", "").split(",")
+    int(x) for x in os.getenv("ADMIN_IDS", "8802164611,8619521184").replace(" ", "").split(",")
     if x.strip().isdigit()
 ]
 
@@ -57,6 +52,12 @@ PAGE_SIZE = 8
 # 🛡️ حماية من الإزعاج: أقصى عدد رسائل خلال المدة المحددة (بالثواني)
 RATE_LIMIT_WINDOW = 20
 RATE_LIMIT_MAX_MSGS = 6
+
+# 🎬 ستيكرات متحركة اختيارية — اتركها فارغة لتعطيل هذه الميزة.
+# طريقة الحصول على file_id: أرسل أي ستيكر متحرك إلى بوت @RawDataBot
+# (أو @userinfobot) وانسخ قيمة "file_id" من الرد، ثم ضعها هنا كمتغير بيئة.
+WELCOME_STICKER_ID = os.getenv("WELCOME_STICKER_ID", "").strip()
+ANSWERED_STICKER_ID = os.getenv("ANSWERED_STICKER_ID", "").strip()
 
 # =====================================================================
 # 📝 إعدادات السجل (log)
@@ -68,10 +69,9 @@ log = logging.getLogger("support-bot")
 # =====================================================================
 # 🎨 نظام تلوين الأزرار
 # =====================================================================
-# ملاحظة مهمة: تيليجرام يدعم فعليًا 3 ألوان فقط للأزرار: primary (أزرق)،
-# success (أخضر)، danger (أحمر). أي قيمة أخرى (warning, secondary, info)
-# تُسبب خطأ. لذلك نستخدم أيقونات إضافية للتمييز البصري بين الفئات مع
-# تعيين كل فئة إلى أقرب لون حقيقي مدعوم.
+# تيليجرام يدعم فعليًا 3 ألوان فقط للأزرار: primary (أزرق)، success (أخضر)،
+# danger (أحمر). أي قيمة أخرى تُسبب خطأ، لذلك نستخدم أيقونات إضافية
+# للتمييز البصري بين الفئات مع تعيين كل فئة إلى أقرب لون حقيقي مدعوم.
 
 STYLE_ICONS = {
     "primary": "🔵",
@@ -83,20 +83,18 @@ STYLE_ICONS = {
     "none": "",
 }
 
-# تحويل الأنماط الستة إلى أحد الألوان الثلاثة الحقيقية المدعومة من تيليجرام
 TELEGRAM_STYLE = {
     "primary": "primary",
     "success": "success",
     "danger": "danger",
-    "warning": "danger",     # الأصفر غير مدعوم -> أقرب لون تحذيري حقيقي
-    "secondary": "primary",  # الرمادي غير مدعوم -> نستخدم primary
+    "warning": "danger",
+    "secondary": "primary",
     "info": "primary",
     "none": None,
 }
 
 
 def make_bold_unicode(text: str) -> str:
-    """تحويل النص إلى حروف عريضة باستخدام يونيكود"""
     out = []
     for char in text:
         cp = ord(char)
@@ -112,7 +110,8 @@ def make_bold_unicode(text: str) -> str:
 
 
 def style_text(text: str, style: str = "none", bold: bool = True) -> str:
-    """إضافة أيقونة وتنسيق للنص"""
+    """إضافة أيقونة وتنسيق للنص — هذا هو النص الفعلي الذي يُرسل عند الضغط
+    على زر لوحة المفاتيح، لذلك يُستخدم أيضًا كمرجع للمقارنة عند استقباله."""
     body = make_bold_unicode(text) if bold else text
     icon = STYLE_ICONS.get(style, "")
     return f"{icon} {body}".strip()
@@ -123,7 +122,6 @@ def style_text(text: str, style: str = "none", bold: bool = True) -> str:
 # =====================================================================
 
 def styled_button(text: str, style: str) -> KeyboardButton:
-    """زر بلون تيليجرام حقيقي + أيقونة توضيحية للفئة"""
     return KeyboardButton(style_text(text, style), style=TELEGRAM_STYLE.get(style))
 
 
@@ -162,6 +160,19 @@ ADMIN_KB = styled_keyboard([
     [BTN_STATS, BTN_BROADCAST],
 ], placeholder="لوحة الأدمن")
 
+# 🔑 النص الفعلي المُرسَل من تيليجرام عند الضغط على كل زر (أيقونة + حروف
+# عريضة) — يجب المقارنة مع هذه القيم بالضبط، وليس مع النص الأصلي الخام.
+LBL_CONTACT = style_text(*BTN_CONTACT)
+LBL_STATUS = style_text(*BTN_STATUS)
+LBL_HELP = style_text(*BTN_HELP)
+LBL_USERS = style_text(*BTN_USERS)
+LBL_PENDING = style_text(*BTN_PENDING)
+LBL_SEARCH = style_text(*BTN_SEARCH)
+LBL_BAN = style_text(*BTN_BAN)
+LBL_STATS = style_text(*BTN_STATS)
+LBL_BROADCAST = style_text(*BTN_BROADCAST)
+LBL_CANCEL = style_text(*BTN_CANCEL)
+
 # =====================================================================
 # 🔗 أزرار الإنلاين (Inline Keyboard) - تدعم التلوين الحقيقي أيضًا (v22.7+)
 # =====================================================================
@@ -194,13 +205,26 @@ _msg_timestamps: dict[int, deque] = defaultdict(deque)
 
 
 def is_rate_limited(uid: int) -> bool:
-    """يرجع True إذا تجاوز المستخدم الحد المسموح من الرسائل"""
     now_ts = time.time()
     q = _msg_timestamps[uid]
     while q and now_ts - q[0] > RATE_LIMIT_WINDOW:
         q.popleft()
     q.append(now_ts)
     return len(q) > RATE_LIMIT_MAX_MSGS
+
+
+# =====================================================================
+# 🎬 ستيكرات متحركة
+# =====================================================================
+
+async def send_sticker_safe(context, chat_id: int, sticker_id: str):
+    """يرسل ستيكرًا إن كان مُعرَّفًا، ويتجاهل الخطأ بصمت إن كان غير صالح."""
+    if not sticker_id:
+        return
+    try:
+        await context.bot.send_sticker(chat_id, sticker_id)
+    except Exception:
+        log.warning("تعذر إرسال الستيكر — تأكد أن معرّف الستيكر صحيح.")
 
 
 # =====================================================================
@@ -251,10 +275,24 @@ def is_banned(uid: int) -> bool:
     return any(str(x) == str(uid) for x in DATA["banned"])
 
 
+def short_label(u: dict) -> str:
+    """اسم مختصر لعرضه في القوائم: يفضّل username، وإلا الاسم، وإلا الأيدي."""
+    if u.get("username"):
+        return f"@{u['username']}"
+    if u.get("name"):
+        return u["name"]
+    return str(u.get("id", ""))
+
+
 def user_label(user: dict) -> str:
+    """عرض تفصيلي وواضح لهوية المستخدم: username إن وُجد، والاسم دائمًا،
+    والأيدي كمرجع إضافي فقط."""
     name = html.escape(user.get("name") or "بدون اسم")
-    username = f"@{html.escape(user['username'])}" if user.get("username") else "بدون معرّف"
-    return f"{name} ({username}) — <code>{user.get('id', '')}</code>"
+    uid = user.get("id", "")
+    if user.get("username"):
+        handle = html.escape(user["username"])
+        return f"👤 @{handle} — {name} — <code>{uid}</code>"
+    return f"👤 {name} (بدون معرّف @) — <code>{uid}</code>"
 
 
 # =====================================================================
@@ -338,6 +376,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
         reply_markup=USER_KB,
     )
+    await send_sticker_safe(context, user.id, WELCOME_STICKER_ID)
 
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -365,7 +404,7 @@ async def cmd_help_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>أوامر الأدمن</b>\n"
         "/users — قائمة المستخدمين\n"
         "/pending — غير المجابة (العاجل أولًا)\n"
-        "/stats — الإحصائيات والتقييمات\n"
+        "/stats — الإحصائيات\n"
         "/broadcast — بث رسالة لكل المستخدمين\n"
         "/export — تصدير المستخدمين CSV\n"
         "/cancel — إلغاء العملية الحالية\n\n"
@@ -407,7 +446,6 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =====================================================================
 
 def admin_actions_kb(uid: int, tid: str):
-    """لوحة أزرار الأدمن للتذكرة: رد سريع، استلام، عاجل، تم، حظر"""
     ticket = DATA["tickets"].get(tid, {})
     claim_label = "🔒 مُستلمة" if ticket.get("claimed_by") else "🔒 استلام"
     priority_label = "🚨 عاجل!" if ticket.get("priority") else "⚡ تمييز كعاجل"
@@ -434,7 +472,7 @@ def canned_kb(uid: int, tid: str):
         [inline(f"{i+1}. {text[:30]}", "success", f"send_canned:{i}:{uid}:{tid}")]
         for i, text in enumerate(CANNED_REPLIES)
     ]
-    rows.append([inline("رجوع", "secondary", f"noop")])
+    rows.append([inline("رجوع", "secondary", "noop")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -452,11 +490,10 @@ async def forward_to_admins(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         "header_cards": [],
         "claimed_by": "",
         "priority": False,
-        "rating": None,
     }
 
     header = (
-        f"📨 <b>رسالة جديدة #{tid}</b>\n👤 {user_label(rec)}\n"
+        f"📨 <b>رسالة جديدة #{tid}</b>\n{user_label(rec)}\n"
         f"💬 إجمالي رسائله: {rec['messages']}\n───────────────"
     )
 
@@ -480,14 +517,11 @@ async def forward_to_admins(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 
 async def refresh_ticket_cards(context, tid: str):
-    """تحديث بطاقة التذكرة عند جميع الأدمنز (بعد الاستلام أو التمييز كعاجل)"""
     ticket = DATA["tickets"].get(tid)
     if not ticket:
         return
     u = DATA["users"].get(str(ticket["user_id"]), {"id": ticket["user_id"]})
-    header = (
-        f"📨 <b>رسالة #{tid}</b>\n👤 {user_label(u)}\n───────────────"
-    )
+    header = f"📨 <b>رسالة #{tid}</b>\n{user_label(u)}\n───────────────"
     if ticket.get("priority"):
         header = "🚨 <b>عاجلة</b>\n" + header
     if ticket.get("claimed_by"):
@@ -502,7 +536,7 @@ async def refresh_ticket_cards(context, tid: str):
                 reply_markup=admin_actions_kb(ticket["user_id"], tid),
             )
         except Exception:
-            pass  # قد تكون الرسالة قديمة جدًا أو محذوفة، نتجاهل بأمان
+            pass
 
 
 def users_filtered(page=0, query=""):
@@ -526,7 +560,7 @@ def users_page_kb(page=0, query=""):
             "pending": "🟡", "answered": "🟢", "new": "🔵",
         }.get(u.get("status"), "⚪")
         rows.append([InlineKeyboardButton(
-            f"{icon} {(u.get('name') or str(u['id']))[:35]}",
+            f"{icon} {short_label(u)[:35]}",
             callback_data=f"pick:{u['id']}",
         )])
     nav = []
@@ -554,8 +588,7 @@ async def show_pending(update, context):
     if not items:
         return await update.effective_message.reply_text("🟢 لا توجد رسائل غير مجابة.")
 
-    # العاجلة أولًا، ثم الأحدث
-    items.sort(key=lambda it: (not it[1].get("priority", False), it[1].get("created", "")), reverse=False)
+    items.sort(key=lambda it: (not it[1].get("priority", False), it[1].get("created", "")))
 
     lines = [f"🟡 <b>غير المجابة</b> ({len(items)})"]
     rows = []
@@ -575,11 +608,7 @@ async def show_stats(update, context):
     pending = sum(t.get("status") == "pending" for t in DATA["tickets"].values())
     answered = sum(t.get("status") == "answered" for t in DATA["tickets"].values())
     total_messages = sum(u.get("messages", 0) for u in DATA["users"].values())
-    ratings = [t["rating"] for t in DATA["tickets"].values() if t.get("rating")]
-    avg_rating = round(sum(ratings) / len(ratings), 1) if ratings else None
     urgent = sum(t.get("priority") and t.get("status") == "pending" for t in DATA["tickets"].values())
-
-    rating_line = f"⭐ متوسط التقييم: <b>{avg_rating}/5</b> ({len(ratings)} تقييم)" if avg_rating else "⭐ لا توجد تقييمات بعد"
 
     await update.effective_message.reply_text(
         f"📊 <b>الإحصائيات</b>\n\n"
@@ -589,8 +618,7 @@ async def show_stats(update, context):
         f"🟢 تمت الإجابة: <b>{answered}</b>\n"
         f"🟡 بانتظار الرد: <b>{pending}</b>\n"
         f"🚨 عاجلة بانتظار الرد: <b>{urgent}</b>\n"
-        f"🔴 المحظورون: <b>{len(DATA['banned'])}</b>\n"
-        f"{rating_line}",
+        f"🔴 المحظورون: <b>{len(DATA['banned'])}</b>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -614,21 +642,7 @@ async def export_users(update, context):
 # 📩 دوال الرد على المستخدمين
 # =====================================================================
 
-async def ask_for_rating(context, uid: int, tid: str):
-    """إرسال طلب تقييم للمستخدم بعد رد الأدمن"""
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("⭐" * n, callback_data=f"rate:{tid}:{n}") for n in range(1, 6)
-    ]])
-    try:
-        await context.bot.send_message(
-            uid, "🙏 كيف تقيّم جودة الرد الذي استلمته؟", reply_markup=kb,
-        )
-    except Exception:
-        pass
-
-
 async def deliver_to_user(update, context, uid: int, tid: Optional[str] = None, text_override: Optional[str] = None):
-    """إرسال رد للأدمن إلى المستخدم (نصًا يدويًا أو رد جاهز)"""
     admin = update.effective_user
 
     try:
@@ -664,8 +678,7 @@ async def deliver_to_user(update, context, uid: int, tid: Optional[str] = None, 
     context.user_data.pop("target", None)
     context.user_data.pop("target_ticket", None)
 
-    if tid:
-        await ask_for_rating(context, uid, tid)
+    await send_sticker_safe(context, uid, ANSWERED_STICKER_ID)
 
     reply_target = update.message or update.callback_query.message
     await reply_target.reply_text("✅ تم إرسال الرد وتحديث حالة التذكرة.", reply_markup=ADMIN_KB)
@@ -687,7 +700,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(user.id):
         awaiting = context.user_data.get("awaiting")
 
-        # تأكيد نص البث الجماعي
         if awaiting == "broadcast" and text:
             context.user_data["broadcast_text"] = text
             context.user_data["awaiting"] = None
@@ -707,21 +719,22 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if info:
                 return await deliver_to_user(update, context, info["user_id"], info.get("ticket_id"))
 
-        if text == BTN_USERS[0]:
+        # 🔑 مقارنة نص الزر الفعلي (مع الأيقونة والتنسيق) وليس النص الخام
+        if text == LBL_USERS:
             return await show_users(update, context)
-        if text == BTN_PENDING[0]:
+        if text == LBL_PENDING:
             return await show_pending(update, context)
-        if text == BTN_STATS[0]:
+        if text == LBL_STATS:
             return await show_stats(update, context)
-        if text == BTN_BROADCAST[0]:
+        if text == LBL_BROADCAST:
             return await cmd_broadcast(update, context)
-        if text == BTN_SEARCH[0]:
+        if text == LBL_SEARCH:
             context.user_data["awaiting"] = "search"
             return await msg.reply_text("🔎 أرسل الاسم أو username أو رقم المستخدم:")
-        if text == BTN_BAN[0]:
+        if text == LBL_BAN:
             context.user_data["awaiting"] = "ban"
             return await msg.reply_text("🔴 أرسل رقم المستخدم للحظر أو رفع الحظر:")
-        if text == BTN_CANCEL[0]:
+        if text == LBL_CANCEL:
             return await cmd_cancel(update, context)
 
         if awaiting == "search" and text:
@@ -757,16 +770,17 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(user.id):
         return await msg.reply_text("⏳ الرجاء الانتظار قليلًا قبل إرسال رسائل جديدة.")
 
-    if text == BTN_HELP[0]:
+    # 🔑 مقارنة نص الزر الفعلي (مع الأيقونة والتنسيق) وليس النص الخام
+    if text == LBL_HELP:
         return await msg.reply_text(
             "👋 أرسل رسالتك هنا، ويدعم البوت النص والصور والملفات والصوت.",
             reply_markup=USER_KB,
         )
 
-    if text == BTN_CONTACT[0]:
+    if text == LBL_CONTACT:
         return await msg.reply_text("✍️ تفضل، اكتب رسالتك الآن.", reply_markup=USER_KB)
 
-    if text == BTN_STATUS[0]:
+    if text == LBL_STATUS:
         rec = DATA["users"].get(str(user.id), {})
         status = {
             "answered": "🟢 تم الرد على آخر رسالة",
@@ -792,19 +806,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
 
-    parts = (q.data or "").split(":")
-    action = parts[0]
-
-    # تقييم المستخدم (متاح لأي مستخدم، ليس فقط الأدمن)
-    if action == "rate":
-        tid, score = parts[1], int(parts[2])
-        if tid in DATA["tickets"]:
-            DATA["tickets"][tid]["rating"] = score
-            save_data()
-        return await q.edit_message_text(f"شكرًا لتقييمك! {'⭐' * score}")
-
     if not is_admin(q.from_user.id):
         return
+
+    parts = (q.data or "").split(":")
+    action = parts[0]
 
     if action == "noop":
         return
@@ -823,7 +829,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u = DATA["users"].get(str(uid), {"id": uid, "name": "", "username": ""})
         history = len(u.get("history", []))
         return await q.message.reply_text(
-            f"👤 {user_label(u)}\n🗂 عناصر السجل: {history}\n✍️ اكتب الرد الآن أو استخدم /cancel.",
+            f"{user_label(u)}\n🗂 عناصر السجل: {history}\n✍️ اكتب الرد الآن أو استخدم /cancel.",
             parse_mode=ParseMode.HTML,
         )
 
@@ -901,7 +907,19 @@ async def on_error(update, context):
 # =====================================================================
 # 🚀 تشغيل البوت
 # =====================================================================
+from flask import Flask
+import threading
+import os
 
+web_app = Flask(name)
+@web_app.route('/')
+def home(): return "Bot is Running! 🚀"
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    web_app.run(host='0.0.0.0', port=port)
+
+threading.Thread(target=run_web, daemon=True).start()
 def main():
     if not BOT_TOKEN:
         raise SystemExit(
