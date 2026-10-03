@@ -45,8 +45,8 @@ SERVICE_STICKERS = {
 }
 
 # ══════════════════ CONFIG (edit here) ══════════════════
-BOT_TOKEN = "8907846587:AAGSHZbj0BN2okK0hUqd0lgMQVa789yZQJE"
-ADMIN_IDS = [8761832730]
+BOT_TOKEN = "8439911839:AAFoB40vsbRST5BKz1Y0CLecb2mu61nDDvU"
+ADMIN_IDS = [8950382997]
 
 # Zenex — direct credentials
 ZENEX_URL   = "https://api.zenexnetwork.com/v1"
