@@ -1,12 +1,16 @@
 # ═══════════════════════════════════════════════════════════════
-# 🤖 OTP APP IBRAHIM — Telegram Bot (Zenex + ZYRON + Combos + Mino)
-#   pip install python-telegram-bot==21.6 requests
+# OTP APP IBRAHIM — Telegram Bot (Zenex + Combos + Mino)
+#   pip install "python-telegram-bot>=21.6" requests flask
 #   python bot.py
 # ═══════════════════════════════════════════════════════════════
-import asyncio, json, logging, os, re, time
+import asyncio, hashlib, html, json, logging, os, re, threading, time
 from collections import defaultdict
 
 import requests
+try:
+    from flask import Flask
+except ImportError:
+    Flask = None
 from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup,
     KeyboardButton, ReplyKeyboardMarkup, Update,
@@ -32,6 +36,21 @@ def make_bold_unicode(text):
             out.append(char)
     return "".join(out)
 
+esc = html.escape
+
+# أزرار ملوّنة (style): تُتجاهل تلقائياً لو نسخة المكتبة لا تدعمها بدل أن يتعطل البوت
+_STYLE_OK = None
+def IBtn(text, style=None, **kw):
+    global _STYLE_OK
+    if style and _STYLE_OK is not False:
+        try:
+            b = InlineKeyboardButton(text, style=style, **kw)
+            _STYLE_OK = True
+            return b
+        except TypeError:
+            _STYLE_OK = False
+    return InlineKeyboardButton(text, **kw)
+
 # ══════════════════ STICKERS SECTION (ANIMATED) ══════════════════
 # هذه الستيكرات كلها متحركة (Animated) وتم اختبارها
 SERVICE_STICKERS = {
@@ -45,35 +64,25 @@ SERVICE_STICKERS = {
 }
 
 # ══════════════════ CONFIG (edit here) ══════════════════
-BOT_TOKEN = "8439911839:AAFoB40vsbRST5BKz1Y0CLecb2mu61nDDvU"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8439911839:AAFoB40vsbRST5BKz1Y0CLecb2mu61nDDvU")
 ADMIN_IDS = [8950382997]
 
 # Zenex — direct credentials
 ZENEX_URL   = "https://api.zenexnetwork.com/v1"
-ZENEX_TOKEN = "ZNX_KB2H1GOF4PJR4H6FN9GJ1VMX"
+ZENEX_TOKEN = os.getenv("ZENEX_TOKEN", "ZNX_KB2H1GOF4PJR4H6FN9GJ1VMX")
 
-# ZYRON — direct credentials (auto-login on start)
-ZYRON_HOST = "http://151.80.19.204/ints/login"
-ZYRON_USER = "Hama11"                             # ← اسم المستخدم
-ZYRON_PASS = "Hama11"                             # ← كلمة السر
-
-# NumberPanel.tech — REST API (المصدر الثالث)
-NP_URL   = "https://numberpanel.tech/api"
-NP_TOKEN = "np_live_cXAtYgOl0nfrmdktshMoLztN9JEoOe6VUei7Df_d_sE"
-
-# Mino — الموقع الرابع (جديد)
-MINO_API_KEY = "mino_live_286408936c463de9e9da08db0255ac1c"
+# Mino
+MINO_API_KEY = os.getenv("MINO_API_KEY", "mino_live_286408936c463de9e9da08db0255ac1c")
 MINO_BASE_URL = "https://mino-sms-panel.xyz"
 
 # OTP group (send masked notice to this group). 0 = disabled.
 OTP_GROUP_ID = -1003921031641
 OTP_GROUP_LINK = "https://t.me/shHsu77"
-OTP_GROUP_TITLE = "🔔 جروب OTP"
 MASK_GROUP_CODE = False
 BOT_USERNAME = "@Otptestre_bot"
 
-REQUIRED_CHANNELS = [{"id": -1003974736720, "title": "القناة الأولى", "url": "https://t.me/gvbhvc669"}]
-FORCE_JOIN_GROUP = True
+# رابط قناة اختياري يظهر كزر "اذهب للقناة" فقط (لا يوجد اشتراك إجباري). اتركه "" لإخفاء الزر.
+CHANNEL_URL = "https://t.me/gvbhvc669"
 STATE_FILE = "state.json"
 USERS_FILE = "users.json"
 COMBO_FILE = "combos.json"
@@ -327,8 +336,6 @@ T = {
         "code_label":"🔑 الرمز","copy_hint":"(اضغط على الرمز/الرقم لنسخه)",
         "back_ar":"⬅️ رجوع",
         "operator":"📶 المشغل","service":"📱 الخدمة","country":"🌍 الدولة","number":"☎️ الرقم",
-        "must_join":"🔒 اشترك أولاً في القنوات/الجروب التالية للاستمرار:",
-        "check_sub":"✅ تحققت من الاشتراك","not_subbed":"⚠️ لم تشترك في كل القنوات بعد.",
         "open_bot":"🤖 افتح البوت لرؤية الكود","join_group":"🔔 جروب OTP","goto_group":"🔔 اذهب لجروب OTP",
         "goto_channel":"📢 اذهب للقناة","otp_arrived":"🔔 وصل OTP!","pulled_by":"👤 سحب بواسطة","code_word":"الرمز",
         "code_hidden":"🔒 الكود مخفي — افتح البوت لعرضه",
@@ -347,8 +354,6 @@ T = {
         "code_label":"🔑 Code","copy_hint":"(Tap the code/number to copy)",
         "back_ar":"⬅️ Back",
         "operator":"📶 Operator","service":"📱 Service","country":"🌍 Country","number":"☎️ Number",
-        "must_join":"🔒 Join the following channels/group to continue:",
-        "check_sub":"✅ I have joined","not_subbed":"⚠️ Not subscribed to all channels.",
         "open_bot":"🤖 Open the bot to see the code","join_group":"🔔 OTP Group","goto_group":"🔔 Go to OTP Group",
         "goto_channel":"📢 Go to Channel","otp_arrived":"🔔 OTP Received!","pulled_by":"👤 Pulled by","code_word":"Code",
         "code_hidden":"🔒 Code hidden — open the bot to view it",
@@ -367,8 +372,6 @@ T = {
         "code_label":"🔑 کۆد","copy_hint":"(کلیک لە کۆد/ژمارە بۆ کۆپیکردن)",
         "back_ar":"⬅️ گەڕانەوە",
         "operator":"📶 ئۆپەراتۆر","service":"📱 خزمەتگوزاری","country":"🌍 وڵات","number":"☎️ ژمارە",
-        "must_join":"🔒 پێویستە لەم کەناڵ/گرووپانە بەشدار بیت:",
-        "check_sub":"✅ بەشداربووم","not_subbed":"⚠️ بەشدار نیت لە هەموو کەناڵەکاندا.",
         "open_bot":"🤖 بۆتەکە بکەرەوە بۆ بینینی کۆد","join_group":"🔔 گرووپی OTP","goto_group":"🔔 بڕۆ بۆ گرووپی OTP",
         "goto_channel":"📢 بڕۆ بۆ کەناڵ","otp_arrived":"🔔 کۆد گەیشت!","pulled_by":"👤 وەرگیرا لەلایەن","code_word":"کۆد",
         "code_hidden":"🔒 کۆد شاراوەیە — بۆتەکە بکەرەوە",
@@ -394,10 +397,10 @@ def _save(fp, data):
     with open(fp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-STATE  = _load(STATE_FILE, {"disabled": [], "custom": {}, "provider": "zenex", "mino_ranges": []})
+STATE  = _load(STATE_FILE, {"disabled": [], "custom": {}, "mino_ranges": []})
 USERS  = _load(USERS_FILE, {})
 COMBOS = _load(COMBO_FILE, {})
-STATE.setdefault("provider", "zenex"); STATE.setdefault("custom", {}); STATE.setdefault("disabled", []); STATE.setdefault("mino_ranges", [])
+STATE.pop("provider", None); STATE.setdefault("custom", {}); STATE.setdefault("disabled", []); STATE.setdefault("mino_ranges", [])
 
 def save_state(): _save(STATE_FILE, STATE)
 def save_users(): _save(USERS_FILE, USERS)
@@ -485,131 +488,7 @@ def zx_fetch_otps():
         return ((r.json().get("data") or {}).get("otps") or [])
     except Exception: return []
 
-# ══════════════════ ZYRON ══════════════════
-_ZY_SESS, _ZY_TS = None, 0
-def _solve_captcha(html_):
-    m = re.search(r"(\d+)\s*([\+\-\*x×])\s*(\d+)\s*=", html_)
-    if not m: return "0"
-    a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
-    return str({"+":a+b,"-":a-b,"*":a*b,"x":a*b,"×":a*b}.get(op, a+b))
-def zyron_login():
-    global _ZY_SESS, _ZY_TS
-    if not (ZYRON_HOST and ZYRON_USER and ZYRON_PASS): return None
-    if _ZY_SESS and time.time() - _ZY_TS < 1800: return _ZY_SESS
-    s = requests.Session()
-    try:
-        r = s.get(ZYRON_HOST + "/", timeout=15)
-        s.post(ZYRON_HOST + "/signin", data={"username":ZYRON_USER,"password":ZYRON_PASS,"capt":_solve_captcha(r.text)}, timeout=15, allow_redirects=True)
-        _ZY_SESS, _ZY_TS = s, time.time()
-        log.info("ZYRON login OK")
-        return s
-    except Exception as e:
-        log.warning("ZYRON login failed: %s", e); return None
-
-# ══════════════════ NumberPanel ══════════════════
-class NumberPanelSource:
-    def __init__(self, base_url, token):
-        self.base = base_url.rstrip("/")
-        self.token = token
-        self._seen_ids = set()
-
-    def _headers(self):
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-
-    def _get(self, path, params=None):
-        try:
-            r = requests.get(f"{self.base}{path}", headers=self._headers(), params=params or {}, timeout=15)
-            if r.ok: return r.json()
-        except Exception: pass
-        return None
-
-    def _post(self, path, payload):
-        try:
-            r = requests.post(f"{self.base}{path}", headers=self._headers(), json=payload, timeout=15)
-            if r.ok: return r.json()
-        except Exception: pass
-        return None
-
-    def get_my_countries_with_services(self):
-        found = []
-        try:
-            data = self._get("/my_numbers")
-            if isinstance(data, dict):
-                numbers = data.get("data") or data.get("numbers") or []
-                for n in numbers:
-                    num = n.get("number") or n.get("phone") or ""
-                    service = n.get("service") or "general"
-                    if not num: continue
-                    clean_num = re.sub(r"\D", "", num)
-                    iso = guess_iso(clean_num)
-                    if iso:
-                        found.append({"iso": iso, "name": iso_name(iso, "en") or iso.upper(), "service": service.lower()})
-        except Exception as e: logging.warning(f"NP get_my_countries_with_services error: {e}")
-        return found
-
-    def ranges(self):
-        out = []
-        try:
-            pairs = self.get_my_countries_with_services()
-            if not pairs: return []
-            for p in pairs:
-                iso = p["iso"]
-                service = p["service"]
-                for sid, svc in SERVICE_MAP.items():
-                    if service in svc["keys"] or service == sid:
-                        out.append({"service": sid, "range": f"np::{sid}::{iso}", "iso": iso, "hits": 1, "country": p["name"]})
-        except Exception as e: logging.warning(f"NP ranges error: {e}")
-        return out
-
-    def fetch_otps(self):
-        new = []
-        try:
-            data = self._get("/my_otps", {"limit": 50})
-            if not isinstance(data, dict) or not data.get("success"): return []
-            items = data.get("otps") or []
-            for it in items:
-                if not isinstance(it, dict): continue
-                number = str(it.get("number") or "").strip()
-                message = str(it.get("message") or "").strip()
-                code = str(it.get("otp_code") or "").strip()
-                if not number or not code: continue
-                uid = f"np:{number}:{code}"
-                if uid in self._seen_ids: continue
-                self._seen_ids.add(uid)
-                new.append({"id": uid, "number": number, "code": code, "otp": code, "message": message, "date": it.get("timestamp") or "", "service": it.get("service") or "", "country": it.get("country") or ""})
-            if len(self._seen_ids) > 10000: self._seen_ids = set(list(self._seen_ids)[-5000:])
-        except Exception as e: logging.warning(f"NP fetch_otps error: {e}")
-        return new
-
-    def request_number(self, service, country):
-        data = self._post("/request_number", {"service": service, "country": country})
-        if data:
-            number = data.get("number") or data.get("phone")
-            if number: return {"number": number}
-        return None
-
-    def get_number(self, rng):
-        try:
-            _, sid, iso = rng.split("::", 2)
-            country_name = iso_name(iso, "en")
-            res = self.request_number(sid, country_name)
-            if res: return {"number": res["number"], "country": country_name, "iso": iso, "operator": "NumberPanel"}
-        except Exception: pass
-        return None
-
-    def status(self):
-        try:
-            data = self._get("/otp", {"count": 1})
-            return (True, "✅ ناجح (متصل)") if data is not None else (False, "❌ فشل")
-        except Exception as e: return False, f"❌ خطأ: {e}"
-
-NP = NumberPanelSource(NP_URL, NP_TOKEN)
-
-# ══════════════════ Mino (الموقع الرابع) ══════════════════
+# ══════════════════ Mino ══════════════════
 # API الفعلي لموقع mino-sms-panel.xyz (حسب توثيق /docs):
 #   POST/GET /getnumber   ?api_key=&rid=&national_format=0/1&remove_plus=0/1
 #   GET      /check       ?api_key=&number=
@@ -621,7 +500,6 @@ class MinoSource:
     def __init__(self, api_key, base_url):
         self.api_key = api_key
         self.base = base_url.rstrip("/")
-        self._seen_ids = set()
 
     def _get(self, path, params=None):
         try:
@@ -671,23 +549,23 @@ class MinoSource:
             raw_text = r.text.strip()
             if not raw_text: return None
             err_keywords = ["NO_NUMBERS","NO_NUMBER","OUT_OF_STOCK","BANNED","LIMIT","ERROR","BALANCE","EMPTY","SQL"]
-            if any(err in raw_text.upper() for err in err_keywords):
-                logging.info(f"Mino no number for rid={rid}: {raw_text[:100]}")
-                return None
             number = None
-            # 1) JSON
+            # 1) JSON: إن وُجد رقم فهو نجاح بغض النظر عن باقي الحقول
             try:
                 data = r.json()
-                if isinstance(data, dict):
-                    if str(data.get("status")).lower() in ["error","fail","false"]:
-                        return None
-                    d = data.get("data") if isinstance(data.get("data"), dict) else data
-                    number = (d.get("full_number") or d.get("number") or d.get("phone")
-                              or d.get("phoneNumber") or d.get("mobile"))
             except Exception:
-                pass
-            # 2) split على : أو |
+                data = None
+            if isinstance(data, dict):
+                d = data.get("data") if isinstance(data.get("data"), dict) else data
+                number = (d.get("full_number") or d.get("number") or d.get("phone")
+                          or d.get("phoneNumber") or d.get("mobile"))
+                if not number and str(data.get("status")).lower() in ["error","fail","false"]:
+                    return None
             if not number:
+                if any(err in raw_text.upper() for err in err_keywords):
+                    logging.info(f"Mino no number for rid={rid}: {raw_text[:100]}")
+                    return None
+                # 2) split على : أو |
                 for part in reversed(re.split(r'[:|]', raw_text)):
                     clean = re.sub(r'\D','', part.strip())
                     if 7 <= len(clean) <= 15:
@@ -721,8 +599,6 @@ class MinoSource:
                 code    = otp.get("otp_code") or otp.get("otp") or otp.get("code") or ""
                 if not (number and code): continue
                 uid = f"mino:{number}:{code}:{otp.get('id') or otp.get('timestamp') or ''}"
-                if uid in self._seen_ids: continue
-                self._seen_ids.add(uid)
                 new.append({"id": uid, "number": str(number), "code": str(code),
                             "otp": str(code), "message": message,
                             "date": otp.get("timestamp") or "",
@@ -745,19 +621,6 @@ def zenex_status():
         return False, f"❌ فشل (HTTP {r.status_code})"
     except Exception as e: return False, f"❌ خطأ: {e}"
 
-def zyron_status():
-    if not (ZYRON_HOST and ZYRON_USER and ZYRON_PASS): return False, "⚪ غير مُعدّ"
-    global _ZY_SESS, _ZY_TS
-    _ZY_SESS, _ZY_TS = None, 0
-    s = zyron_login()
-    return (True, "✅ ناجح") if s else (False, "❌ فشل تسجيل الدخول")
-
-def np_status():
-    ok, msg = NP.status()
-    try: np_ranges = len(NP.ranges())
-    except: np_ranges = 0
-    return ok, msg, np_ranges
-
 def mino_status():
     try:
         numbers = MINO.ranges()
@@ -766,33 +629,32 @@ def mino_status():
 
 def logins_report():
     zx_ok, zx_msg = zenex_status()
-    zy_ok, zy_msg = zyron_status()
-    np_ok, np_msg, np_ranges = np_status()
     mino_ok, mino_msg = mino_status()
     return (
         "🔐 <b>حالة الدخول للمواقع</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🟢 <b>Zenex</b>: {zx_msg}\n"
-        f"🔵 <b>ZYRON</b>: {zy_msg}\n"
-        f"🟣 <b>NumberPanel</b>: {np_msg} ({np_ranges} رينج)\n"
-        f"🔴 <b>Mino</b>: {mino_msg}\n"
+        f"🔹 <b>Zenex</b>: {zx_msg}\n"
+        f"🔹 <b>Mino</b>: {mino_msg}\n"
         "━━━━━━━━━━━━━━━━━━━━━"
     )
 
 # ══════════════════ Unified ranges ══════════════════
+_CACHE = {}
+def _cached(key, fn, ttl=15):
+    now = time.time(); e = _CACHE.get(key)
+    if e and now - e[0] < ttl: return e[1]
+    data = fn()
+    if data: _CACHE[key] = (now, data)
+    return data
+
 def all_ranges():
     base = []
     # 1. Zenex
-    if STATE.get("provider") == "zenex":
-        base.extend(zx_active_ranges())
-    # 2. Custom
+    base.extend(_cached("zx", zx_active_ranges))
+    # 2. Custom (رينجات زينيكس اليدوية)
     for sid, arr in STATE.get("custom", {}).items():
         for r in arr: base.append({**r, "service": sid})
-    # 3. NumberPanel
-    try:
-        base.extend(NP.ranges())
-    except Exception: pass
-    # 4. Mino
+    # 3. Mino
     try:
         base.extend(MINO.ranges())
     except Exception: pass
@@ -809,7 +671,7 @@ def ranges_for_service(sid):
             iso = (r.get("iso") or "").lower() or guess_iso(str(r.get("range","")))
             out.append({"range": r["range"], "iso": iso, "hits": int(r.get("hits") or 0)})
     for name, c in COMBOS.get(sid, {}).items():
-        remaining = [n for n in c.get("numbers", []) if n not in c.get("used", [])]
+        remaining = [n for n in c.get("numbers", []) if n not in c.get("used", []) and not find_reserver(n)]
         if remaining:
             iso = c.get("iso") or guess_iso(remaining[0])
             out.append({"range": f"combo::{sid}::{name}", "iso": iso, "hits": len(remaining), "combo": name})
@@ -845,12 +707,10 @@ def reserve_number(rng):
         _, sid, name = rng.split("::", 2)
         c = COMBOS.get(sid, {}).get(name)
         if not c: return None
-        rem = [n for n in c["numbers"] if n not in c.get("used", [])]
+        rem = [n for n in c["numbers"] if n not in c.get("used", []) and not find_reserver(n)]
         if not rem: return None
         num = rem[0]
         return {"number": num, "country": name, "iso": c.get("iso") or guess_iso(num), "operator": "combo", "combo": (sid, name)}
-    if rng.startswith("np::"):
-        return NP.get_number(rng)
     if rng.startswith("mino::"):
         return MINO.get_number(rng)
     return zx_get_number(rng)
@@ -864,79 +724,50 @@ def consume_combo(sid, name, number):
     c["numbers"] = [n for n in c["numbers"] if n != number]
     save_combos()
 
-def find_otp_for(number, seen):
-    tail = re.sub(r"\D", "", number)[-9:]
+_OTP_CACHE = {"ts": 0.0, "data": []}
+def _all_otp_msgs():
+    """كل الأكواد الحالية من كل المصادر (مخزّنة ثانيتين كي لا تُرهق الـ API مع كثرة الجلسات)."""
+    now = time.time()
+    if now - _OTP_CACHE["ts"] < 2: return _OTP_CACHE["data"]
+    data = []
     for msg in zx_fetch_otps():
         mid = str(msg.get("nid") or msg.get("id") or msg.get("created_at") or "")
-        if mid in seen: continue
-        digits = re.sub(r"\D", "", str(msg.get("number") or ""))
-        if not digits.endswith(tail): continue
         raw = str(msg.get("otp") or "")
         m = re.search(r"\b(\d{4,8})\b", raw)
-        return {"id": mid, "code": m.group(1) if m else raw, "raw": raw}
-    for source, name in [(NP, "NP"), (MINO, "Mino")]:
+        data.append({"id": mid, "number": str(msg.get("number") or ""), "code": m.group(1) if m else raw, "raw": raw})
+    for source in (MINO,):
         try:
             for m in source.fetch_otps():
-                if m["id"] in seen: continue
-                digits = re.sub(r"\D", "", m["number"])
-                if not digits.endswith(tail): continue
                 raw = m["otp"]
                 mm = re.search(r"\b(\d{3}[-\s]?\d{3,4}|\d{4,8})\b", raw)
                 code = re.sub(r"\D", "", mm.group(1)) if mm else raw
-                return {"id": m["id"], "code": code, "raw": raw}
+                data.append({"id": m["id"], "number": m["number"], "code": code, "raw": raw})
         except Exception: pass
+    _OTP_CACHE.update(ts=now, data=data)
+    return data
+
+def _tail(number): return re.sub(r"\D", "", str(number or ""))[-9:]
+
+def snapshot_seen(number):
+    """معرّفات الأكواد الموجودة مسبقاً لهذا الرقم حتى لا تُعرض كأنها جديدة."""
+    tail = _tail(number)
+    return {m["id"] for m in _all_otp_msgs() if re.sub(r"\D", "", m["number"]).endswith(tail)}
+
+def find_otp_for(number, seen):
+    tail = _tail(number)
+    for m in _all_otp_msgs():
+        if m["id"] in seen: continue
+        if not re.sub(r"\D", "", m["number"]).endswith(tail): continue
+        return m
     return None
 
-# ══════════════════ Subscription gate ══════════════════
-def required_chats():
-    chats = list(REQUIRED_CHANNELS)
-    if FORCE_JOIN_GROUP and OTP_GROUP_ID:
-        chats.append({"id": OTP_GROUP_ID, "title": OTP_GROUP_TITLE, "url": OTP_GROUP_LINK or None, "is_group": True})
-    return chats
-
-async def check_subscription(ctx, uid):
-    missing = []
-    for ch in required_chats():
-        try:
-            m = await ctx.bot.get_chat_member(ch["id"], uid)
-            if m.status in ("left", "kicked"): missing.append(ch)
-        except Exception: missing.append(ch)
-    return (len(missing) == 0), missing
-
-def _chat_url(ch):
-    if ch.get("url"): return ch["url"]
-    cid = ch["id"]
-    if isinstance(cid, str) and cid.startswith("@"): return f"https://t.me/{cid.lstrip('@')}"
-    return None
-
-def sub_kb(missing, lang):
-    rows = []
-    for ch in missing:
-        url = _chat_url(ch)
-        icon = "🔔" if ch.get("is_group") else "📢"
-        rows.append([InlineKeyboardButton(f"{icon} {ch['title']}", url=url or None, callback_data="noop" if not url else None)])
-    rows.append([InlineKeyboardButton(tr(lang, "check_sub"), callback_data="sub:check", style="primary")])
-    return InlineKeyboardMarkup(rows)
-
-async def enforce_sub(ctx, chat_id, uid, lang):
-    ok, missing = await check_subscription(ctx, uid)
-    if ok: return True
-    await ctx.bot.send_message(chat_id, tr(lang, "must_join"), reply_markup=sub_kb(missing, lang))
-    return False
-
-def bot_url(): return f"https://t.me/{BOT_USERNAME}" if BOT_USERNAME else None
+# ══════════════════ Links ══════════════════
+def bot_url(): return f"https://t.me/{BOT_USERNAME.lstrip('@')}" if BOT_USERNAME else None
 def group_url(): return OTP_GROUP_LINK or None
-def channel_url():
-    try:
-        for c in REQUIRED_CHANNELS:
-            u = c.get("url")
-            if u: return u
-    except Exception: pass
-    return None
+def channel_url(): return CHANNEL_URL or None
 
 # اسم البوت المعروض في رسائل الرمز (يمكن تغييره بحرّية)
 BOT_BRAND = "OTP ABO IBRAHIM"
-BRAND_FLAG = "🏴"
 
 # ══════════════════ Keyboards ══════════════════
 def _kb_btn(text, style=None):
@@ -946,15 +777,23 @@ def _kb_btn(text, style=None):
     except TypeError:
         return KeyboardButton(text)
 
+def _norm_btn(x): return str(x or "").replace("\ufe0f", "").strip()
+_BTN_LABELS = {k: [_norm_btn(make_bold_unicode(T[l][k])) for l in T]
+               for k in ("get_number", "language", "admin_panel", "history", "repeat_last")}
+def _is_btn(text, key):
+    """مطابقة زر لوحة المفاتيح بنص الزر نفسه (وليس بوجود إيموجي) — تعمل أيضاً مع الأزرار القديمة."""
+    t = _norm_btn(text)
+    return any(lbl and lbl in t for lbl in _BTN_LABELS[key])
+
 def main_kb(lang, is_admin):
-    rows = [[_kb_btn(make_bold_unicode(f"📞 {tr(lang, 'get_number')}"), style="danger")]]
+    rows = [[_kb_btn(make_bold_unicode(tr(lang, "get_number")), style="danger")]]
     rows.append([
         _kb_btn(make_bold_unicode(tr(lang, "repeat_last")), style="primary"),
         _kb_btn(make_bold_unicode(tr(lang, "history")), style="primary"),
     ])
-    row3 = [_kb_btn(make_bold_unicode(f"🌐 {tr(lang, 'language')}"), style="success")]
+    row3 = [_kb_btn(make_bold_unicode(tr(lang, "language")), style="success")]
     if is_admin:
-        row3.append(_kb_btn(make_bold_unicode(f"🛠️ {tr(lang, 'admin_panel')}"), style="success"))
+        row3.append(_kb_btn(make_bold_unicode(tr(lang, "admin_panel")), style="success"))
     rows.append(row3)
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -962,7 +801,7 @@ def services_kb(lang):
     rows = []
     for sid, s in SERVICE_MAP.items():
         if sid in STATE.get("disabled", []): continue
-        rows.append([InlineKeyboardButton(
+        rows.append([IBtn(
             make_bold_unicode(f"{s['emoji']} {svc_name(sid, lang)}"),
             callback_data=f"svc:{sid}",
             style="primary"
@@ -985,55 +824,54 @@ def countries_kb(sid, lang, page=0):
             country_display_name = iso_name(iso, lang) or (iso.upper() if iso else "Unknown")
         if label and label not in country_display_name:
             country_display_name = f"{country_display_name} {label}"
-        rows.append([InlineKeyboardButton(
+        rows.append([IBtn(
             make_bold_unicode(f"{flag(iso)} {country_display_name} ✅ {c['hits']}"),
             callback_data=f"co:{sid}:{c['gkey']}",
             style="primary"
         )])
     nav = []
-    if page > 0: nav.append(InlineKeyboardButton("◀️", callback_data=f"cop:{sid}:{page-1}", style="primary"))
-    nav.append(InlineKeyboardButton(f"{page+1}/{pages}", callback_data="noop"))
-    if page < pages - 1: nav.append(InlineKeyboardButton("▶️", callback_data=f"cop:{sid}:{page+1}", style="primary"))
+    if page > 0: nav.append(IBtn("◀️", callback_data=f"cop:{sid}:{page-1}", style="primary"))
+    nav.append(IBtn(f"{page+1}/{pages}", callback_data="noop"))
+    if page < pages - 1: nav.append(IBtn("▶️", callback_data=f"cop:{sid}:{page+1}", style="primary"))
     if nav: rows.append(nav)
-    rows.append([InlineKeyboardButton("🔄", callback_data=f"cop:{sid}:{page}", style="primary"),
-                 InlineKeyboardButton(make_bold_unicode(tr(lang, "back")), callback_data="services", style="danger")])
+    rows.append([IBtn("🔄", callback_data=f"cop:{sid}:{page}", style="primary"),
+                 IBtn(make_bold_unicode(tr(lang, "back")), callback_data="services", style="danger")])
     return InlineKeyboardMarkup(rows)
 
 def number_kb(sid, iso, number, lang):
     rows = [
-        [InlineKeyboardButton(make_bold_unicode(tr(lang, "new_number")), callback_data=f"new:{sid}:{iso}", style="success")],
-        [InlineKeyboardButton(make_bold_unicode(tr(lang, "change_country")), callback_data=f"svc:{sid}", style="primary"),
-         InlineKeyboardButton(make_bold_unicode(tr(lang, "copy")), callback_data=f"cp:{number}", style="primary")],
+        [IBtn(make_bold_unicode(tr(lang, "new_number")), callback_data=f"new:{sid}:{iso}", style="success")],
+        [IBtn(make_bold_unicode(tr(lang, "change_country")), callback_data=f"svc:{sid}", style="primary"),
+         IBtn(make_bold_unicode(tr(lang, "copy")), callback_data=f"cp:{number}", style="primary")],
     ]
     gu = group_url()
-    if gu: rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "goto_group")), url=gu, style="primary")])
-    rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "cancel_number")), callback_data=f"cxl:{number}:{sid}:{iso}", style="danger")])
-    rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "back")), callback_data="services", style="danger")])
+    if gu: rows.append([IBtn(make_bold_unicode(tr(lang, "goto_group")), url=gu, style="primary")])
+    rows.append([IBtn(make_bold_unicode(tr(lang, "cancel_number")), callback_data=f"cxl:{number}:{sid}:{iso}", style="danger")])
+    rows.append([IBtn(make_bold_unicode(tr(lang, "back")), callback_data="services", style="danger")])
     return InlineKeyboardMarkup(rows)
 
 def admin_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(make_bold_unicode(f"🔌 Provider: {STATE.get('provider','zenex').upper()}"), callback_data="adm:prov", style="primary")],
-        [InlineKeyboardButton(make_bold_unicode("🟢 تفعيل/إيقاف الخدمات"), callback_data="adm:toggle", style="primary")],
-        [InlineKeyboardButton(make_bold_unicode("➕ رينج زينيكس"), callback_data="adm:add_zx", style="success"),
-         InlineKeyboardButton(make_bold_unicode("➕ رينج Mino"), callback_data="adm:add_mino", style="success")],
-        [InlineKeyboardButton(make_bold_unicode("🗑 حذف رينج زينيكس"), callback_data="adm:del", style="danger"),
-         InlineKeyboardButton(make_bold_unicode("🗑 حذف رينج Mino"), callback_data="adm:del_mino", style="danger")],
-        [InlineKeyboardButton(make_bold_unicode("📤 رفع كومبو"), callback_data="adm:combo_up", style="success"),
-         InlineKeyboardButton(make_bold_unicode("📁 كومبوهاتي"), callback_data="adm:combo_list", style="primary")],
-        [InlineKeyboardButton(make_bold_unicode("📋 الرينجات المباشرة"), callback_data="adm:list", style="primary")],
-        [InlineKeyboardButton(make_bold_unicode("📣 إعلان للجميع"), callback_data="adm:bc", style="primary"),
-         InlineKeyboardButton(make_bold_unicode("👥 مستخدمون"), callback_data="adm:users", style="primary")],
-        [InlineKeyboardButton(make_bold_unicode("🚫 حظر / فك مستخدم"), callback_data="adm:ban", style="danger")],
-        [InlineKeyboardButton(make_bold_unicode("📊 إحصائيات"), callback_data="adm:stats", style="primary"),
-         InlineKeyboardButton(make_bold_unicode("🔐 حالة الدخول"), callback_data="adm:logins", style="primary")],
+        [IBtn(make_bold_unicode("🟢 تفعيل/إيقاف الخدمات"), callback_data="adm:toggle", style="primary")],
+        [IBtn(make_bold_unicode("➕ رينج زينيكس"), callback_data="adm:add_zx", style="success"),
+         IBtn(make_bold_unicode("➕ رينج Mino"), callback_data="adm:add_mino", style="success")],
+        [IBtn(make_bold_unicode("🗑 حذف رينج زينيكس"), callback_data="adm:del", style="danger"),
+         IBtn(make_bold_unicode("🗑 حذف رينج Mino"), callback_data="adm:del_mino", style="danger")],
+        [IBtn(make_bold_unicode("📤 رفع كومبو"), callback_data="adm:combo_up", style="success"),
+         IBtn(make_bold_unicode("📁 كومبوهاتي"), callback_data="adm:combo_list", style="primary")],
+        [IBtn(make_bold_unicode("📋 الرينجات المباشرة"), callback_data="adm:list", style="primary")],
+        [IBtn(make_bold_unicode("📣 إعلان للجميع"), callback_data="adm:bc", style="primary"),
+         IBtn(make_bold_unicode("👥 مستخدمون"), callback_data="adm:users", style="primary")],
+        [IBtn(make_bold_unicode("🚫 حظر / فك مستخدم"), callback_data="adm:ban", style="danger")],
+        [IBtn(make_bold_unicode("📊 إحصائيات"), callback_data="adm:stats", style="primary"),
+         IBtn(make_bold_unicode("🔐 حالة الدخول"), callback_data="adm:logins", style="primary")],
     ])
 
 def lang_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton(make_bold_unicode("🇸🇦 العربية"), callback_data="lang:ar", style="primary")],
-        [InlineKeyboardButton(make_bold_unicode("🇬🇧 English"), callback_data="lang:en", style="primary")],
-        [InlineKeyboardButton(make_bold_unicode("🟨 کوردی"), callback_data="lang:ku", style="primary")],
+        [IBtn(make_bold_unicode("العربية"), callback_data="lang:ar", style="primary")],
+        [IBtn(make_bold_unicode("English"), callback_data="lang:en", style="primary")],
+        [IBtn(make_bold_unicode("کوردی"), callback_data="lang:ku", style="primary")],
     ])
 
 # ══════════════════ Session helpers ══════════════════
@@ -1045,9 +883,9 @@ def set_task(ctx, chat_id, t):
     cancel_task(ctx, chat_id)
     ctx.application.bot_data[f"task:{chat_id}"] = t
 
-WELCOME = ("⚡ <b>OTP APP IBRAHIM</b> ⚡\n"
+WELCOME = ("<b>OTP APP IBRAHIM</b>\n"
            "━━━━━━━━━━━━━━━━━━━━━\n"
-           "🟢 <b>Premium</b> • ⚡ <b>Fast</b> • 🔐 <b>Secure</b>\n"
+           "<b>Premium</b> • <b>Fast</b> • <b>Secure</b>\n"
            "━━━━━━━━━━━━━━━━━━━━━")
 
 # ══════════════════ Commands ══════════════════
@@ -1057,8 +895,8 @@ async def cmd_start(update, ctx):
     u["started"] = True; save_users()
     lang = u["lang"]; is_admin = update.effective_user.id in ADMIN_IDS
     tgu = update.effective_user
-    who = ("@" + tgu.username) if tgu.username else (tgu.first_name or "أخي")
-    greet = f"🌹 <b>السلام عليكم ورحمة الله وبركاته</b>\n👋 حيّاك الله أخي <b>{who}</b>"
+    who = esc(("@" + tgu.username) if tgu.username else (tgu.first_name or "أخي"))
+    greet = f"<b>السلام عليكم ورحمة الله وبركاته</b>\nحيّاك الله أخي <b>{who}</b>"
     await update.message.reply_text(f"{WELCOME}\n\n{greet}", parse_mode=ParseMode.HTML, reply_markup=main_kb(lang, is_admin))
 
 async def cmd_admin(update, ctx):
@@ -1081,11 +919,11 @@ async def cmd_last(update, ctx):
     if is_admin:
         num = L.get("number") or "—"
         code = L.get("code") or "—"
-        user_line = (f"@{L['username']}" if L.get("username") else (L.get("name") or "—")) + f" (<code>{L.get('uid')}</code>)"
+        user_line = esc(f"@{L['username']}" if L.get("username") else (L.get("name") or "—")) + f" (<code>{L.get('uid')}</code>)"
     else:
         num = mask_number(L.get("number") or "")
         code = mask_code(L.get("code") or "")
-        user_line = L.get("name") or (f"@{L['username']}" if L.get("username") else "—")
+        user_line = esc(L.get("name") or (f"@{L['username']}" if L.get("username") else "—"))
     txt = ("📊 <b>آخر OTP</b>\n"
            "━━━━━━━━━━━━━━━━━━━━━\n"
            f"👤 <b>المستخدم:</b> {user_line}\n"
@@ -1114,25 +952,19 @@ async def cmd_pm(update, ctx):
     except Exception as e:
         await update.message.reply_text(f"❌ فشل الإرسال: {e}")
 
+async def on_sticker(update, ctx):
+    """للأدمن فقط: أرسل ستيكراً للبوت ليعطيك الـ file_id."""
+    if update.effective_user.id not in ADMIN_IDS: return
+    st = update.message.sticker
+    if not st: return
+    await update.message.reply_text(
+        f"<b>File ID:</b>\n<code>{st.file_id}</code>\n\n"
+        f"<b>Unique ID:</b>\n<code>{st.file_unique_id}</code>\n\n"
+        f"<b>Emoji:</b> {esc(st.emoji or '—')}\n"
+        f"<b>Set:</b> {esc(st.set_name or '—')}",
+        parse_mode=ParseMode.HTML)
+
 async def on_text(update, ctx):
-    # ====== كود استخراج الستيكر (مدمج) ======
-    if update.message.sticker:
-        sticker = update.message.sticker
-        file_id = sticker.file_id
-        file_unique_id = sticker.file_unique_id
-        emoji = sticker.emoji or "بدون إيموجي"
-        set_name = sticker.set_name or "غير معروف"
-        await update.message.reply_text(
-            f"✅ <b>تم استلام الستيكر!</b>\n\n"
-            f"📁 <b>File ID:</b>\n<code>{file_id}</code>\n\n"
-            f"🆔 <b>File Unique ID:</b>\n<code>{file_unique_id}</code>\n\n"
-            f"😊 <b>Emoji:</b> {emoji}\n"
-            f"📦 <b>Set Name:</b> {set_name}\n\n"
-            f"💡 <i>انسخ الـ File ID وضعه في كود البوت.</i>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-    # ===========================================
 
     t = (update.message.text or "").strip()
     uid = update.effective_user.id
@@ -1200,18 +1032,19 @@ async def on_text(update, ctx):
     if is_admin and ctx.user_data.get("await_bc"):
         ctx.user_data.pop("await_bc"); sent = 0
         for k in list(USERS.keys()):
+            if USERS[k].get("banned"): continue
             try: await ctx.bot.send_message(int(k), f"📣 {t}"); sent += 1
             except Exception: pass
+            await asyncio.sleep(0.05)
         await update.message.reply_text(f"✅ {sent}"); return
 
-    if "📞" in t:
-        if not await enforce_sub(ctx, update.effective_chat.id, uid, lang): return
+    if _is_btn(t, "get_number"):
         await update.message.reply_text(tr(lang,"pick_service"), reply_markup=services_kb(lang)); return
-    if "🌐" in t:
+    if _is_btn(t, "language"):
         await update.message.reply_text(tr(lang,"choose_lang"), reply_markup=lang_kb()); return
-    if "🛠" in t and is_admin:
+    if _is_btn(t, "admin_panel") and is_admin:
         await update.message.reply_text(make_bold_unicode("🛠 Admin Panel"), parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
-    if "📜" in t:
+    if _is_btn(t, "history"):
         hist = (u.get("history") or [])[-10:][::-1]
         if not hist:
             await update.message.reply_text(tr(lang, "no_history")); return
@@ -1221,7 +1054,7 @@ async def on_text(update, ctx):
             lines.append(f"⏰ {ts} | {flag(h.get('iso',''))} <b>{h.get('service','—')}</b>\n"
                          f"☎️ <code>{h.get('number','—')}</code>  🔑 <code>{h.get('otp','—')}</code>")
         await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML); return
-    if "🔁" in t:
+    if _is_btn(t, "repeat_last"):
         hist = u.get("history") or []
         if not hist:
             await update.message.reply_text(tr(lang, "no_history")); return
@@ -1233,7 +1066,6 @@ async def on_text(update, ctx):
         iso_last = (last.get("iso") or "").lower()
         if not sid_last or not iso_last:
             await update.message.reply_text(tr(lang, "no_history")); return
-        if not await enforce_sub(ctx, update.effective_chat.id, uid, lang): return
         cancel_task(ctx, update.effective_chat.id)
         task = asyncio.create_task(run_session(ctx, update.effective_chat.id, uid, sid_last, iso_last))
         set_task(ctx, update.effective_chat.id, task); return
@@ -1247,15 +1079,9 @@ async def on_document(update, ctx):
     doc = update.message.document
     if not doc: return
     fname = (doc.file_name or "combo.txt")
-    base = os.path.splitext(fname)[0]
+    base = os.path.splitext(os.path.basename(fname))[0]
     file = await doc.get_file()
-    path = f"/tmp/{fname}"
-    await file.download_to_drive(path)
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f: raw = f.read()
-    finally:
-        try: os.remove(path)
-        except Exception: pass
+    raw = bytes(await file.download_as_bytearray()).decode("utf-8", errors="ignore")
     numbers = []
     for line in raw.splitlines():
         n = re.sub(r"[^\d+]", "", line)
@@ -1267,14 +1093,14 @@ async def on_document(update, ctx):
     save_combos()
     ctx.user_data.pop("combo_sid", None)
     await update.message.reply_text(
-        f"✅ رُفع الكومبو <b>{base}</b> ({len(numbers)} رقم) للخدمة <b>{svc_name(sid,'ar')}</b>.\n"
+        f"✅ رُفع الكومبو <b>{esc(base)}</b> ({len(numbers)} رقم) للخدمة <b>{svc_name(sid,'ar')}</b>.\n"
         f"سيظهر كقائمة داخل هذه الخدمة.",
         parse_mode=ParseMode.HTML)
 
 async def send_number(ctx, chat_id, uid, sid, gkey, edit_mid=None):
     u = get_user(uid); lang = u["lang"]
     svc = SERVICE_MAP.get(sid, {"emoji":"📱"})
-    rg = best_range(sid, gkey)
+    rg = await asyncio.to_thread(best_range, sid, gkey)
     if not rg:
         text = tr(lang, "no_range")
         if edit_mid:
@@ -1287,10 +1113,10 @@ async def send_number(ctx, chat_id, uid, sid, gkey, edit_mid=None):
     if edit_mid:
         try:
             await ctx.bot.edit_message_text(
-                f"{tr(lang,'reserving')}\n{svc['emoji']} <b>{svc_name(sid,lang)}</b> — {flag(iso)} {country_label}",
+                f"{tr(lang,'reserving')}\n{svc['emoji']} <b>{svc_name(sid,lang)}</b> — {flag(iso)} {esc(country_label)}",
                 chat_id=chat_id, message_id=edit_mid, parse_mode=ParseMode.HTML)
         except Exception: pass
-    res = reserve_number(rg["range"])
+    res = await asyncio.to_thread(reserve_number, rg["range"])
     if not res:
         text = tr(lang, "no_range")
         if edit_mid:
@@ -1301,12 +1127,12 @@ async def send_number(ctx, chat_id, uid, sid, gkey, edit_mid=None):
     country = country_label
     op = res.get("operator") or "—"
     u["stats"]["numbers"] += 1; save_users()
-    header = f"{flag(iso)} <b>{make_bold_unicode(country)} Number Assigned:</b>"
+    header = f"{flag(iso)} <b>{esc(make_bold_unicode(country))} Number Assigned:</b>"
     box = (f"┌──────────────────────┐\n"
            f"│   ⏳ {make_bold_unicode(tr(lang,'waiting_code'))}   │\n"
            f"└──────────────────────┘")
     body = (f"{header}\n{box}\n"
-            f"\n{svc['emoji']} <b>{make_bold_unicode(svc_name(sid,lang))}</b> — {tr(lang,'operator')}: <code>{make_bold_unicode(op)}</code>\n"
+            f"\n{svc['emoji']} <b>{make_bold_unicode(svc_name(sid,lang))}</b> — {tr(lang,'operator')}: <code>{esc(make_bold_unicode(op))}</code>\n"
             f"☎️ <code>+{re.sub(r'[^0-9]','',str(res['number']))}</code>\n"
             f"<i>{tr(lang,'copy_hint')}</i>")
     kb = number_kb(sid, gkey, res["number"], lang)
@@ -1322,14 +1148,19 @@ async def send_number(ctx, chat_id, uid, sid, gkey, edit_mid=None):
 
 async def run_session(ctx, chat_id, uid, sid, gkey, init_mid=None):
     u = get_user(uid); lang = u["lang"]
-    seen = set()
     current = await send_number(ctx, chat_id, uid, sid, gkey, edit_mid=init_mid)
     if not current: return
+    iso = current["iso"]
+    svc_emoji = SERVICE_MAP.get(current.get("sid") or sid, {}).get("emoji", "📱")
+    try:
+        seen = await asyncio.to_thread(snapshot_seen, current["number"])
+    except Exception:
+        seen = set()
     end = time.time() + POLL_TIMEOUT
     try:
         while time.time() < end:
             await asyncio.sleep(POLL_INTERVAL)
-            hit = find_otp_for(current["number"], seen)
+            hit = await asyncio.to_thread(find_otp_for, current["number"], seen)
             if hit:
                 seen.add(hit["id"])
                 u["stats"]["otps"] += 1
@@ -1337,28 +1168,28 @@ async def run_session(ctx, chat_id, uid, sid, gkey, init_mid=None):
                 u["history"] = u["history"][-100:]; save_users()
                 if current.get("combo"):
                     consume_combo(current["combo"][0], current["combo"][1], current["number"])
-                cancel_number(current["number"])
+                await asyncio.to_thread(cancel_number, current["number"])
                 unregister_reservation(current["number"])
                 set_last_otp(uid, current["number"], hit["code"], current["svc_name"], current["country"], iso)
                 dm_kb_rows = [[
-                    InlineKeyboardButton(make_bold_unicode(tr(lang, "copy_code")), callback_data=f"cpc:{hit['code']}", style="success"),
-                    InlineKeyboardButton(make_bold_unicode(tr(lang, "repeat_last")), callback_data=f"new:{current.get('sid') or sid}:{iso}", style="primary"),
+                    IBtn(make_bold_unicode(tr(lang, "copy_code")), callback_data=f"cpc:{hit['code']}", style="success"),
+                    IBtn(make_bold_unicode(tr(lang, "repeat_last")), callback_data=f"new:{current.get('sid') or sid}:{gkey}", style="primary"),
                 ]]
                 gu = group_url()
                 cu = channel_url()
-                if gu: dm_kb_rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "goto_group")), url=gu, style="primary")])
-                if cu: dm_kb_rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "goto_channel")), url=cu, style="success")])
+                if gu: dm_kb_rows.append([IBtn(make_bold_unicode(tr(lang, "goto_group")), url=gu, style="primary")])
+                if cu: dm_kb_rows.append([IBtn(make_bold_unicode(tr(lang, "goto_channel")), url=cu, style="success")])
                 dm_kb = InlineKeyboardMarkup(dm_kb_rows)
                 iso_up = (iso or "").upper()
                 pretty_num = "+" + re.sub(r'[^0-9]','', str(current['number']))
-                brand_line = f"{BRAND_FLAG} <b>{make_bold_unicode(BOT_BRAND)}</b> {BRAND_FLAG}"
+                brand_line = f"<b>{make_bold_unicode(BOT_BRAND)}</b>"
                 try:
                     await ctx.bot.send_message(chat_id,
                         f"{brand_line}\n"
                         f"<b>{make_bold_unicode(tr(lang,'otp_arrived'))}</b>\n"
                         "━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"{flag(iso)} <b>{make_bold_unicode(iso_up)}</b> | 📱 SMS <code>{pretty_num}</code> | 🎉 <b>{make_bold_unicode(current['svc_name'])}</b>\n"
-                        f"🌍 <b>{make_bold_unicode(current['country'])}</b>\n"
+                        f"{flag(iso)} <b>{make_bold_unicode(iso_up)}</b> | 📱 SMS <code>{pretty_num}</code> | {svc_emoji} <b>{make_bold_unicode(current['svc_name'])}</b>\n"
+                        f"🌍 <b>{esc(make_bold_unicode(current['country']))}</b>\n"
                         "━━━━━━━━━━━━━━━━━━━━━\n"
                         f"🔑 <b>{make_bold_unicode(tr(lang,'code_word'))}:</b>\n"
                         f"<code>{hit['code']}</code>\n"
@@ -1368,14 +1199,14 @@ async def run_session(ctx, chat_id, uid, sid, gkey, init_mid=None):
                 if OTP_GROUP_ID:
                     try:
                         shown_code = mask_code(hit["code"]) if MASK_GROUP_CODE else hit["code"]
-                        gkb_rows = [[InlineKeyboardButton(make_bold_unicode(tr(lang, "copy_code")), callback_data=f"cpc:{hit['code']}", style="success")]]
+                        gkb_rows = [[IBtn(make_bold_unicode(tr(lang, "copy_code")), callback_data=f"cpc:{hit['code']}", style="success")]]
                         bu = bot_url()
-                        if bu: gkb_rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "open_bot")), url=bu, style="primary")])
-                        if cu: gkb_rows.append([InlineKeyboardButton(make_bold_unicode(tr(lang, "goto_channel")), url=cu, style="success")])
+                        if bu: gkb_rows.append([IBtn(make_bold_unicode(tr(lang, "open_bot")), url=bu, style="primary")])
+                        if cu: gkb_rows.append([IBtn(make_bold_unicode(tr(lang, "goto_channel")), url=cu, style="success")])
                         gkb = InlineKeyboardMarkup(gkb_rows)
                         who = u.get("username")
                         who_disp = f"@{who}" if who else (u.get('name') or ('ID '+str(uid)))
-                        who_line = f"<b>{make_bold_unicode(tr(lang,'pulled_by'))}:</b> {make_bold_unicode(who_disp)}"
+                        who_line = f"<b>{make_bold_unicode(tr(lang,'pulled_by'))}:</b> {esc(make_bold_unicode(who_disp))}"
                         code_line = f"🔑 <b>{make_bold_unicode(tr(lang,'code_word'))}:</b>\n<code>{shown_code}</code>"
                         await ctx.bot.send_message(
                             OTP_GROUP_ID,
@@ -1383,7 +1214,7 @@ async def run_session(ctx, chat_id, uid, sid, gkey, init_mid=None):
                             f"<b>{make_bold_unicode(tr(lang,'otp_arrived'))}</b>\n"
                             "━━━━━━━━━━━━━━━━━━━━━\n"
                             f"📱 <b>{make_bold_unicode(current['svc_name'])}</b>\n"
-                            f"🌍 {flag(iso)} <b>{make_bold_unicode(current['country'])}</b>\n"
+                            f"🌍 {flag(iso)} <b>{esc(make_bold_unicode(current['country']))}</b>\n"
                             f"☎️ <code>{mask_number(current['number'])}</code>\n"
                             "━━━━━━━━━━━━━━━━━━━━━\n"
                             f"{code_line}\n"
@@ -1397,11 +1228,11 @@ async def run_session(ctx, chat_id, uid, sid, gkey, init_mid=None):
                 second_end = time.time() + 60
                 while time.time() < second_end:
                     await asyncio.sleep(POLL_INTERVAL)
-                    hit2 = find_otp_for(current["number"], seen)
+                    hit2 = await asyncio.to_thread(find_otp_for, current["number"], seen)
                     if hit2:
                         seen.add(hit2["id"])
                         try:
-                            kb2 = InlineKeyboardMarkup([[InlineKeyboardButton(make_bold_unicode(tr(lang,"copy_code")), callback_data=f"cpc:{hit2['code']}", style="success")]])
+                            kb2 = InlineKeyboardMarkup([[IBtn(make_bold_unicode(tr(lang,"copy_code")), callback_data=f"cpc:{hit2['code']}", style="success")]])
                             await ctx.bot.send_message(chat_id,
                                 f"<b>{make_bold_unicode(tr(lang,'second_code'))}</b>\n"
                                 "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1412,11 +1243,24 @@ async def run_session(ctx, chat_id, uid, sid, gkey, init_mid=None):
                 return
     except asyncio.CancelledError:
         unregister_reservation(current["number"]); return
+    except Exception:
+        log.exception("run_session crashed")
+        unregister_reservation(current["number"]); return
     try:
-        cancel_number(current["number"])
+        await asyncio.to_thread(cancel_number, current["number"])
         unregister_reservation(current["number"])
         await ctx.bot.send_message(chat_id, f"{tr(lang,'timeout')}: <code>{current['number']}</code>", parse_mode=ParseMode.HTML)
     except Exception: pass
+
+def toggle_kb(lang):
+    rows = []
+    for sid, sv in SERVICE_MAP.items():
+        mark = "✅" if sid not in STATE.get("disabled", []) else "🚫"
+        rows.append([IBtn(f"{mark} {sv['emoji']} {svc_name(sid,lang)}", callback_data=f"tgl:{sid}", style="primary")])
+    rows.append([IBtn("⬅️", callback_data="adm:panel", style="danger")])
+    return InlineKeyboardMarkup(rows)
+
+def _h(name): return hashlib.md5(str(name).encode("utf-8")).hexdigest()[:10]
 
 async def on_callback(update, ctx):
     q = update.callback_query
@@ -1433,23 +1277,10 @@ async def on_callback(update, ctx):
     await q.answer()
 
     if data == "noop": return
-    if data == "sub:check":
-        ok, missing = await check_subscription(ctx, uid)
-        if ok:
-            try: await q.edit_message_text("✅", reply_markup=services_kb(lang))
-            except Exception: pass
-        else:
-            try: await q.edit_message_text(tr(lang,"not_subbed"), reply_markup=sub_kb(missing, lang))
-            except Exception: pass
+    if data == "sub:check":   # زر قديم من النسخة السابقة (الاشتراك الإجباري أُلغي)
+        try: await q.edit_message_text(tr(lang,"pick_service"), reply_markup=services_kb(lang))
+        except Exception: pass
         return
-
-    gated = data.startswith(("svc:","co:","new:","cop:"))
-    if gated:
-        ok, missing = await check_subscription(ctx, uid)
-        if not ok:
-            try: await q.edit_message_text(tr(lang,"must_join"), reply_markup=sub_kb(missing, lang))
-            except Exception: pass
-            return
 
     if data == "services":
         cancel_task(ctx, chat_id)
@@ -1465,17 +1296,17 @@ async def on_callback(update, ctx):
 
     if data.startswith("svc:"):
         sid = data.split(":",1)[1]; cancel_task(ctx, chat_id)
-        kb = countries_kb(sid, lang, 0)
+        kb = await asyncio.to_thread(countries_kb, sid, lang, 0)
         if not kb:
             await q.edit_message_text(tr(lang,"no_country"),
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(lang,"back"), callback_data="services", style="danger")]]))
+                reply_markup=InlineKeyboardMarkup([[IBtn(tr(lang,"back"), callback_data="services", style="danger")]]))
             return
         s = SERVICE_MAP.get(sid, {})
         await q.edit_message_text(f"{s.get('emoji','')} <b>{svc_name(sid,lang)}</b>\n{tr(lang,'pick_country')}", parse_mode=ParseMode.HTML, reply_markup=kb); return
 
     if data.startswith("cop:"):
         _, sid, page = data.split(":",2)
-        try: await q.edit_message_reply_markup(reply_markup=countries_kb(sid, lang, int(page)))
+        try: await q.edit_message_reply_markup(reply_markup=await asyncio.to_thread(countries_kb, sid, lang, int(page)))
         except Exception: pass
         return
 
@@ -1497,9 +1328,9 @@ async def on_callback(update, ctx):
 
     if data.startswith("cxl:"):
         num = data.split(":")[1]
-        cancel_task(ctx, chat_id); cancel_number(num); u["stats"]["cancels"] += 1; save_users()
+        cancel_task(ctx, chat_id); await asyncio.to_thread(cancel_number, num); u["stats"]["cancels"] += 1; save_users()
         try: await q.edit_message_text(f"❌ <code>{num}</code>", parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(tr(lang,"back"), callback_data="services", style="danger")]]))
+            reply_markup=InlineKeyboardMarkup([[IBtn(tr(lang,"back"), callback_data="services", style="danger")]]))
         except Exception: pass
         return
 
@@ -1507,56 +1338,48 @@ async def on_callback(update, ctx):
         sub = data.split(":",1)[1]
         if sub == "panel":
             await q.edit_message_text(make_bold_unicode("🛠 Admin"), parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
-        if sub == "prov":
-            STATE["provider"] = "zyron" if STATE.get("provider","zenex") == "zenex" else "zenex"
-            save_state(); await q.edit_message_text(make_bold_unicode("🛠 Admin"), parse_mode=ParseMode.HTML, reply_markup=admin_kb()); return
         if sub == "toggle":
-            rows = []
-            for sid, s in SERVICE_MAP.items():
-                mark = "✅" if sid not in STATE.get("disabled", []) else "🚫"
-                rows.append([InlineKeyboardButton(f"{mark} {s['emoji']} {svc_name(sid,lang)}", callback_data=f"tgl:{sid}", style="primary")])
-            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
-            await q.edit_message_text("Services", reply_markup=InlineKeyboardMarkup(rows)); return
+            await q.edit_message_text("Services", reply_markup=toggle_kb(lang)); return
         if sub == "add_zx":
-            rows = [[InlineKeyboardButton(make_bold_unicode(f"{sv['emoji']} {svc_name(sid_,lang)}"), callback_data=f"addsvc:{sid_}", style="primary")] for sid_, sv in SERVICE_MAP.items()]
-            rows.append([InlineKeyboardButton(make_bold_unicode("⬅️"), callback_data="adm:panel", style="danger")])
+            rows = [[IBtn(make_bold_unicode(f"{sv['emoji']} {svc_name(sid_,lang)}"), callback_data=f"addsvc:{sid_}", style="primary")] for sid_, sv in SERVICE_MAP.items()]
+            rows.append([IBtn(make_bold_unicode("⬅️"), callback_data="adm:panel", style="danger")])
             await q.edit_message_text(make_bold_unicode("➕ إضافة رينج زينيكس — اختر خدمة:"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
         if sub == "add_mino":
-            rows = [[InlineKeyboardButton(make_bold_unicode(f"{sv['emoji']} {svc_name(sid_,lang)}"), callback_data=f"addminosvc:{sid_}", style="success")] for sid_, sv in SERVICE_MAP.items()]
-            rows.append([InlineKeyboardButton(make_bold_unicode("⬅️"), callback_data="adm:panel", style="danger")])
+            rows = [[IBtn(make_bold_unicode(f"{sv['emoji']} {svc_name(sid_,lang)}"), callback_data=f"addminosvc:{sid_}", style="success")] for sid_, sv in SERVICE_MAP.items()]
+            rows.append([IBtn(make_bold_unicode("⬅️"), callback_data="adm:panel", style="danger")])
             await q.edit_message_text(make_bold_unicode("➕ إضافة رينج Mino — اختر خدمة:"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
         if sub == "del_mino":
             rows = []
             for r in STATE.get("mino_ranges", []):
                 rid = r.get("rid",""); sid_ = r.get("sid",""); iso = r.get("iso","")
-                rows.append([InlineKeyboardButton(f"🗑 Mino {sid_} {flag(iso.upper())} rid={rid}", callback_data=f"delmino:{rid}", style="danger")])
-            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
+                rows.append([IBtn(f"🗑 Mino {sid_} {flag(iso.upper())} rid={rid}", callback_data=f"delmino:{rid}", style="danger")])
+            rows.append([IBtn("⬅️", callback_data="adm:panel", style="danger")])
             await q.edit_message_text(make_bold_unicode("🗑 حذف رينج Mino:"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows)); return
         if sub == "del":
             rows = []
             for sid, arr in STATE.get("custom", {}).items():
                 for r in arr:
-                    rows.append([InlineKeyboardButton(f"🗑 {sid} {r['range']} ({r.get('country','')})", callback_data=f"delrng:{sid}:{r['range']}", style="danger")])
-            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
+                    rows.append([IBtn(f"🗑 {sid} {r['range']} ({r.get('country','')})", callback_data=f"delrng:{sid}:{r['range']}", style="danger")])
+            rows.append([IBtn("⬅️", callback_data="adm:panel", style="danger")])
             await q.edit_message_text("حذف رينج:", reply_markup=InlineKeyboardMarkup(rows)); return
         if sub == "combo_up":
-            rows = [[InlineKeyboardButton(f"{s['emoji']} {svc_name(sid,lang)}", callback_data=f"cbsvc:{sid}", style="success")] for sid, s in SERVICE_MAP.items()]
-            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
+            rows = [[IBtn(f"{s['emoji']} {svc_name(sid,lang)}", callback_data=f"cbsvc:{sid}", style="success")] for sid, s in SERVICE_MAP.items()]
+            rows.append([IBtn("⬅️", callback_data="adm:panel", style="danger")])
             await q.edit_message_text("📤 اختر الخدمة لرفع الكومبو:", reply_markup=InlineKeyboardMarkup(rows)); return
         if sub == "combo_list":
             rows = []
             for sid, dct in COMBOS.items():
                 for name, c in dct.items():
-                    rows.append([InlineKeyboardButton(f"📁 {sid}/{name} — {len(c['numbers'])} (used {len(c.get('used',[]))})", callback_data=f"cbdel:{sid}:{name}", style="primary")])
-            rows.append([InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")])
+                    rows.append([IBtn(f"📁 {sid}/{name} — {len(c['numbers'])} (used {len(c.get('used',[]))})", callback_data=f"cbdel:{sid}:{_h(name)}", style="primary")])
+            rows.append([IBtn("⬅️", callback_data="adm:panel", style="danger")])
             await q.edit_message_text("Combos (اضغط للحذف):", reply_markup=InlineKeyboardMarkup(rows)); return
         if sub == "list":
-            base = all_ranges()
+            base = await asyncio.to_thread(all_ranges)
             lines = [f"📋 {len(base)}:"]
             for r in base[:60]:
                 lines.append(f"• {r.get('service')} — <code>{r.get('range')}</code> {flag((r.get('iso') or '').lower())} {r.get('hits',0)}")
             await q.edit_message_text("\n".join(lines), parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+                reply_markup=InlineKeyboardMarkup([[IBtn("⬅️", callback_data="adm:panel", style="danger")]])); return
         if sub == "bc":
             ctx.user_data["await_bc"] = True
             await q.edit_message_text("📣 أرسل نص الإعلان."); return
@@ -1568,14 +1391,14 @@ async def on_callback(update, ctx):
             items = sorted(USERS.items(), key=lambda kv: -(kv[1].get("stats", {}).get("numbers", 0)))
             for k, x in items[:40]:
                 st = x.get("stats", {})
-                name = x.get("name") or "—"
-                un = f"@{x['username']}" if x.get("username") else ""
+                name = esc(x.get("name") or "—")
+                un = esc(f"@{x['username']}") if x.get("username") else ""
                 ban = "⛔ " if x.get("banned") else ""
                 lines.append(f"{ban}<b>{name}</b> {un}\n   🆔 <code>{k}</code> — 📞 {st.get('numbers',0)} • 🔑 {st.get('otps',0)} • ❌ {st.get('cancels',0)}")
             txt = "\n".join(lines)
             if len(txt) > 3900: txt = txt[:3900] + "\n…"
             await q.edit_message_text(txt, parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+                reply_markup=InlineKeyboardMarkup([[IBtn("⬅️", callback_data="adm:panel", style="danger")]])); return
         if sub == "stats":
             n = sum(x.get("stats", {}).get("numbers", 0) for x in USERS.values())
             o = sum(x.get("stats", {}).get("otps", 0) for x in USERS.values())
@@ -1590,20 +1413,23 @@ async def on_callback(update, ctx):
                 f"🔑 الأكواد الواصلة: <b>{o}</b>\n"
                 f"❌ الإلغاءات: <b>{c}</b>",
                 parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+                reply_markup=InlineKeyboardMarkup([[IBtn("⬅️", callback_data="adm:panel", style="danger")]])); return
         if sub == "logins":
-            await q.edit_message_text("🔐 جاري فحص تسجيل الدخول للموقعين...")
+            await q.edit_message_text("🔐 جاري فحص تسجيل الدخول...")
             report = await asyncio.to_thread(logins_report)
             await q.edit_message_text(report, parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 إعادة الفحص", callback_data="adm:logins", style="primary")],
-                    [InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+                    [IBtn("🔄 إعادة الفحص", callback_data="adm:logins", style="primary")],
+                    [IBtn("⬅️", callback_data="adm:panel", style="danger")]])); return
 
     if data.startswith("tgl:") and uid in ADMIN_IDS:
         sid = data.split(":",1)[1]
         dis = STATE.setdefault("disabled", [])
         (dis.remove(sid) if sid in dis else dis.append(sid))
-        save_state(); q.data = "adm:toggle"; await on_callback(update, ctx); return
+        save_state()
+        try: await q.edit_message_text("Services", reply_markup=toggle_kb(lang))
+        except Exception: pass
+        return
     if data.startswith("addsvc:") and uid in ADMIN_IDS:
         sid = data.split(":",1)[1]
         ctx.user_data["await_range_for"] = sid
@@ -1614,7 +1440,7 @@ async def on_callback(update, ctx):
         _, sid, code = data.split(":",2)
         STATE["custom"][sid] = [r for r in STATE.get("custom",{}).get(sid,[]) if r["range"] != code]
         save_state(); await q.edit_message_text(f"✅ حُذف {code}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+            reply_markup=InlineKeyboardMarkup([[IBtn("⬅️", callback_data="adm:panel", style="danger")]])); return
     if data.startswith("addminosvc:") and uid in ADMIN_IDS:
         sid = data.split(":",1)[1]
         ctx.user_data["await_mino_range_for"] = sid
@@ -1626,7 +1452,7 @@ async def on_callback(update, ctx):
         STATE["mino_ranges"] = [r for r in STATE.get("mino_ranges", []) if str(r.get("rid")) != rid]
         save_state()
         await q.edit_message_text(f"✅ حُذف rid={rid}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+            reply_markup=InlineKeyboardMarkup([[IBtn("⬅️", callback_data="adm:panel", style="danger")]])); return
 
     if data.startswith("cbsvc:") and uid in ADMIN_IDS:
         sid = data.split(":",1)[1]
@@ -1636,10 +1462,11 @@ async def on_callback(update, ctx):
             f"سيتم استخدامه كمصدر للأرقام لهذه الخدمة (لا سحب من الموقع).",
             parse_mode=ParseMode.HTML); return
     if data.startswith("cbdel:") and uid in ADMIN_IDS:
-        _, sid, name = data.split(":",2)
-        COMBOS.get(sid, {}).pop(name, None); save_combos()
-        await q.edit_message_text(f"🗑 تم حذف {sid}/{name}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️", callback_data="adm:panel", style="danger")]])); return
+        _, sid, hname = data.split(":",2)
+        name = next((n for n in COMBOS.get(sid, {}) if _h(n) == hname), None)
+        if name: COMBOS[sid].pop(name, None); save_combos()
+        await q.edit_message_text(f"🗑 تم حذف {sid}/{esc(name or '—')}",
+            reply_markup=InlineKeyboardMarkup([[IBtn("⬅️", callback_data="adm:panel", style="danger")]])); return
 
 # ══════════════════ Main ══════════════════
 async def on_startup(app):
@@ -1667,26 +1494,26 @@ async def on_startup(app):
         log.warning("startup report failed: %s", e)
 
 # ═══════════════════════════════════════════════════════════════
-# 🔧 خادم ويب صغير للحفاظ على البوت نشطاً
+# خادم ويب صغير للحفاظ على البوت نشطاً (اختياري)
 # ═══════════════════════════════════════════════════════════════
-from flask import Flask
-import threading
-import os
+def start_keepalive_server():
+    if Flask is None:
+        log.warning("flask غير مثبت — خادم keep-alive متوقف (pip install flask)")
+        return
+    web_app = Flask(__name__)
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
-web_app = Flask(__name__)
-@web_app.route('/')
-def home(): return "Bot is Running! 🚀"
+    @web_app.route("/")
+    def home(): return "Bot is Running!"
 
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    web_app.run(host='0.0.0.0', port=port)
+    def run_web():
+        port = int(os.environ.get("PORT", 8080))
+        web_app.run(host="0.0.0.0", port=port)
 
-threading.Thread(target=run_web, daemon=True).start()
-
-# ═══════════════════════════════════════════════════════════════
+    threading.Thread(target=run_web, daemon=True).start()
 
 def main():
-    zyron_login()
+    start_keepalive_server()
     app = Application.builder().token(BOT_TOKEN).post_init(on_startup).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("admin", cmd_admin))
@@ -1695,8 +1522,9 @@ def main():
     app.add_handler(CommandHandler("pm",   cmd_pm))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, on_document))
+    app.add_handler(MessageHandler(filters.Sticker.ALL, on_sticker))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-    log.info("🚀 OTP APP IBRAHIM started.")
+    log.info("OTP APP IBRAHIM started.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
