@@ -65,7 +65,7 @@ SERVICE_STICKERS = {
 
 # ══════════════════ CONFIG (edit here) ══════════════════
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8865573357:AAHXH9kC_fIwhQRhhQuY6alSpxk6oNY6IU0")
-ADMIN_IDS = [8950382997]
+ADMIN_IDS = [8952384711]
 
 # Zenex — direct credentials
 ZENEX_URL   = "https://api.zenexnetwork.com/v1"
