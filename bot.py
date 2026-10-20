@@ -64,7 +64,7 @@ SERVICE_STICKERS = {
 }
 
 # ══════════════════ CONFIG (edit here) ══════════════════
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8439911839:AAFoB40vsbRST5BKz1Y0CLecb2mu61nDDvU")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8865573357:AAHXH9kC_fIwhQRhhQuY6alSpxk6oNY6IU0")
 ADMIN_IDS = [8950382997]
 
 # Zenex — direct credentials
